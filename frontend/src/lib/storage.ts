@@ -1,0 +1,40 @@
+// localStorage helpers — guarded for SSR
+
+const KEYS = {
+  token: "auth_token",
+  username: "username",
+  role: "role",
+  baseAddress: "base_address",
+  themeMode: "theme_mode",
+} as const;
+
+export type ThemeMode = "light" | "dark" | "system";
+
+export const storage = {
+  getToken: () => (typeof window === "undefined" ? null : localStorage.getItem(KEYS.token)),
+  setToken: (v: string) => localStorage.setItem(KEYS.token, v),
+
+  getUsername: () => (typeof window === "undefined" ? null : localStorage.getItem(KEYS.username)),
+  setUsername: (v: string) => localStorage.setItem(KEYS.username, v),
+
+  getRole: () => (typeof window === "undefined" ? null : localStorage.getItem(KEYS.role)),
+  setRole: (v: string) => localStorage.setItem(KEYS.role, v),
+
+  clearAuth: () => {
+    localStorage.removeItem(KEYS.token);
+    localStorage.removeItem(KEYS.username);
+    localStorage.removeItem(KEYS.role);
+  },
+
+  getBaseAddress: () => {
+    if (typeof window === "undefined") return "/api";
+    return localStorage.getItem(KEYS.baseAddress) || "/api";
+  },
+  setBaseAddress: (v: string) => localStorage.setItem(KEYS.baseAddress, v),
+
+  getThemeMode: (): ThemeMode => {
+    if (typeof window === "undefined") return "system";
+    return (localStorage.getItem(KEYS.themeMode) as ThemeMode) || "system";
+  },
+  setThemeMode: (v: ThemeMode) => localStorage.setItem(KEYS.themeMode, v),
+};

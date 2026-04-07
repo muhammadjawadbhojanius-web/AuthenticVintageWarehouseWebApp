@@ -1,0 +1,10 @@
+{
+  "_comment": "Edit this file to change how bundle details are formatted when copied to the clipboard. Changes take effect on the next copy — no rebuild needed. Available placeholders are listed below.",
+  "_header_placeholders": ["{bundle_code}", "{bundle_name}", "{status}", "{created_at}", "{item_count}", "{image_count}"],
+  "_item_placeholders": ["{n}", "{gender}", "{brand}", "{article}", "{number_of_pieces}", "{gift_pcs}", "{grade}", "{size_variation}", "{comments}"],
+
+  "header": "Bundle Code: {bundle_code}\nBundle Name: {bundle_name}\nStatus: {status}\nCreated: {created_at}\n\nItems ({item_count}):",
+  "item": "  {n}. {brand} — {article}\n     {gender} | Qty: {number_of_pieces} | Grade: {grade} | Sizes: {size_variation}\n     Notes: {comments}",
+  "item_separator": "\n\n",
+  "footer": ""
+}

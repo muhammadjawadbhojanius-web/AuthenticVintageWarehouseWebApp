@@ -1,0 +1,6 @@
+frontend/
+Logo/
+**/__pycache__
+*.pyc
+*.db
+.git

@@ -1,0 +1,24 @@
+# Backend
+backend/venv/
+backend/__pycache__/
+backend/warehouse.db
+backend/uploads/
+backend/.env
+
+# Frontend
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.metadata
+**/pubspec.lock
+**/*.iml
+
+# IDEs
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
