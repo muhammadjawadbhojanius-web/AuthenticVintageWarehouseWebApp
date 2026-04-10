@@ -86,6 +86,8 @@ function substitute(template: string, vars: Record<string, string | number | nul
  * template. Pure function — no side effects, no network.
  */
 export function renderBundleClipboard(template: ClipboardTemplate, bundle: Bundle): string {
+  const total_pieces = (bundle.items ?? []).reduce((acc, it) => acc + (it.number_of_pieces || 0), 0);
+
   const headerVars = {
     bundle_code: bundle.bundle_code,
     bundle_name: bundle.bundle_name ?? "",
@@ -93,6 +95,7 @@ export function renderBundleClipboard(template: ClipboardTemplate, bundle: Bundl
     created_at: formatDate(bundle.created_at),
     item_count: bundle.items?.length ?? 0,
     image_count: bundle.images?.length ?? 0,
+    total_pieces,
   };
 
   const renderedHeader = substitute(template.header, headerVars);
@@ -107,7 +110,7 @@ export function renderBundleClipboard(template: ClipboardTemplate, bundle: Bundl
       gift_pcs: it.gift_pcs,
       grade: it.grade,
       size_variation: it.size_variation,
-      comments: it.comments ?? "",
+      comments: it.comments || "No Additional Comment",
     })
   );
 
@@ -125,9 +128,9 @@ export function renderBundleClipboard(template: ClipboardTemplate, bundle: Bundl
  * on any failure (no clipboard permission, network error, malformed
  * template). Callers should toast.
  */
-export async function copyBundleToClipboard(bundle: Bundle): Promise<string> {
-  const template = await fetchClipboardTemplate();
-  const text = renderBundleClipboard(template, bundle);
+export async function copyBundleToClipboard(bundle: Bundle, template?: ClipboardTemplate): Promise<string> {
+  const finalTemplate = template || await fetchClipboardTemplate();
+  const text = renderBundleClipboard(finalTemplate, bundle);
   if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
   } else {

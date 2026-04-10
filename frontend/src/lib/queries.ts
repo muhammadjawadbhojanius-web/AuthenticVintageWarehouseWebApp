@@ -2,8 +2,9 @@ import { api } from "./api";
 import type { Bundle, User } from "./types";
 
 // Bundles
-export async function fetchBundles(): Promise<Bundle[]> {
-  const res = await api().get<Bundle[]>("/bundles/");
+export async function fetchBundles(search?: string): Promise<Bundle[]> {
+  const url = search ? `/bundles/?search=${encodeURIComponent(search)}` : "/bundles/";
+  const res = await api().get<Bundle[]>(url);
   return res.data;
 }
 

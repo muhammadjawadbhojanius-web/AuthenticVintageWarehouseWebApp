@@ -1,3 +1,4 @@
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 from . import models
 from passlib.context import CryptContext
@@ -104,15 +105,26 @@ def add_bundle_item(db: Session, bundle_code: str, item_data):
     return db_item
 
 
-def get_bundles(db: Session):
+def get_bundles(db: Session, search: str = None):
     # selectinload issues exactly two extra queries (one for all items,
     # one for all images) regardless of bundle count, instead of N+1.
-    return (
+    query = (
         db.query(models.Bundle)
         .options(selectinload(models.Bundle.items), selectinload(models.Bundle.images))
-        .order_by(models.Bundle.created_at.desc())
-        .all()
     )
+
+    if search:
+        search_filter = f"%{search}%"
+        query = query.outerjoin(models.BundleItem).filter(
+            or_(
+                models.Bundle.bundle_code.ilike(search_filter),
+                models.Bundle.bundle_name.ilike(search_filter),
+                models.BundleItem.article.ilike(search_filter),
+                models.BundleItem.brand.ilike(search_filter),
+            )
+        ).distinct()
+
+    return query.order_by(models.Bundle.created_at.desc()).all()
 
 
 def update_bundle_status(db: Session, bundle_code: str, new_status: str):

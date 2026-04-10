@@ -1,24 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { Plus, X, DownloadCloud, Inbox, RefreshCw, Image as ImageIcon, Video, Download } from "lucide-react";
+import { Plus, X, DownloadCloud, Inbox, RefreshCw, Image as ImageIcon, Video, Download, Search } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { ConnectivityRibbon } from "@/components/connectivity-ribbon";
 import { BundleCard } from "@/components/bundle-card";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { IOSSaveSheet } from "@/components/ios-save-sheet";
 import { useAuthGuard } from "@/hooks/use-auth-guard";
 import { useAuth } from "@/contexts/auth-context";
 import { useToast } from "@/components/toaster";
 import { fetchBundles, fetchBundle, deleteBundle as apiDeleteBundle } from "@/lib/queries";
+import { fetchClipboardTemplate, copyBundleToClipboard } from "@/lib/clipboard-template";
 import { mediaUrlFor, isVideoFilename } from "@/lib/media";
 import { isIOSSafari, fetchAsFile, anchorDownload } from "@/lib/ios-download";
-import { copyBundleToClipboard } from "@/lib/clipboard-template";
+import { cn } from "@/lib/utils";
 import type { Bundle, BundleImage } from "@/lib/types";
 
 export default function BundlesPage() {
@@ -34,13 +36,22 @@ export default function BundlesPage() {
   const [deleteFor, setDeleteFor] = useState<string | null>(null);
   const [iosSheet, setIosSheet] = useState<{ url: string; fileName: string } | null>(null);
   const [copyingCode, setCopyingCode] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   const isAdmin = role === "Admin";
   const canDownload = isAdmin || role === "Listing Executives";
 
   const bundlesQuery = useQuery({
-    queryKey: ["bundles"],
-    queryFn: fetchBundles,
+    queryKey: ["bundles", debouncedSearch],
+    queryFn: () => fetchBundles(debouncedSearch),
     enabled: ready,
   });
 
@@ -53,6 +64,12 @@ export default function BundlesPage() {
     onError: () => {
       toast({ title: "Failed to delete bundle", variant: "error" });
     },
+  });
+
+  const templateQuery = useQuery({
+    queryKey: ["clipboard-template"],
+    queryFn: fetchClipboardTemplate,
+    enabled: ready,
   });
 
   if (!ready) {
@@ -76,7 +93,7 @@ export default function BundlesPage() {
   const handleCopy = async (bundle: Bundle) => {
     setCopyingCode(bundle.bundle_code);
     try {
-      await copyBundleToClipboard(bundle);
+      await copyBundleToClipboard(bundle, templateQuery.data);
       toast({ title: `Copied ${bundle.bundle_code}`, variant: "success" });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -181,6 +198,36 @@ export default function BundlesPage() {
       )}
 
       <div className="flex-1 overflow-y-auto p-4">
+        {/* Search Bar & Refresh */}
+        <div className="mx-auto mb-4 max-w-2xl flex gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search by ID, name, article or brand..."
+              className="pl-10"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => bundlesQuery.refetch()}
+            disabled={bundlesQuery.isFetching}
+            title="Refresh list"
+          >
+            <RefreshCw className={cn("h-4 w-4", bundlesQuery.isFetching && "animate-spin")} />
+          </Button>
+        </div>
+
         {bundlesQuery.isLoading && (
           <div className="flex justify-center py-12">
             <Spinner />
@@ -202,8 +249,12 @@ export default function BundlesPage() {
         {bundlesQuery.isSuccess && bundles.length === 0 && (
           <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
             <Inbox className="h-12 w-12" />
-            <p className="mt-3 font-medium">No bundles yet</p>
-            <p className="text-sm">Tap the + button to add one.</p>
+            <p className="mt-3 font-medium">
+              {search ? "No matches found" : "No bundles yet"}
+            </p>
+            <p className="text-sm">
+              {search ? "Try a different search term." : "Tap the + button to add one."}
+            </p>
           </div>
         )}
         {bundles.length > 0 && (

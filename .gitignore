@@ -4,6 +4,8 @@ backend/__pycache__/
 backend/warehouse.db
 backend/uploads/
 backend/.env
+backend/app/__pycache__/
+backend/app/routers/__pycache__/
 
 # Frontend
 **/build/

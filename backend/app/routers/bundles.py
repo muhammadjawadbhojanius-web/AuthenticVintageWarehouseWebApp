@@ -35,8 +35,8 @@ def create_bundle(bundle_in: schemas.BundleCreate, db: Session = Depends(get_db)
 
 # ---------- GET ALL BUNDLES ----------
 @router.get("/", response_model=list[schemas.BundleOut])
-def read_bundles(db: Session = Depends(get_db)):
-    return crud.get_bundles(db)
+def read_bundles(search: str = None, db: Session = Depends(get_db)):
+    return crud.get_bundles(db, search=search)
 
 
 # ---------- GET SINGLE BUNDLE ----------

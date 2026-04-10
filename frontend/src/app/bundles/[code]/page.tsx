@@ -46,7 +46,7 @@ import {
 } from "@/lib/queries";
 import { uploadFilesParallel } from "@/lib/chunked-upload";
 import { mediaUrlFor, isVideoFilename } from "@/lib/media";
-import { copyBundleToClipboard } from "@/lib/clipboard-template";
+import { fetchClipboardTemplate, copyBundleToClipboard } from "@/lib/clipboard-template";
 import { useAuth } from "@/contexts/auth-context";
 import type { BundleItem } from "@/lib/types";
 
@@ -91,6 +91,12 @@ export default function BundleDetailPage() {
     enabled: ready,
   });
 
+  const templateQuery = useQuery({
+    queryKey: ["clipboard-template"],
+    queryFn: fetchClipboardTemplate,
+    enabled: ready,
+  });
+
   const images = useMemo(() => bundleQuery.data?.images ?? [], [bundleQuery.data]);
   const items = useMemo(() => bundleQuery.data?.items ?? [], [bundleQuery.data]);
 
@@ -123,7 +129,7 @@ export default function BundleDetailPage() {
     if (!bundleQuery.data) return;
     setCopying(true);
     try {
-      await copyBundleToClipboard(bundleQuery.data);
+      await copyBundleToClipboard(bundleQuery.data, templateQuery.data);
       toast({ title: "Bundle details copied", variant: "success" });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
