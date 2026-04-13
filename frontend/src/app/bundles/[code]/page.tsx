@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
@@ -43,9 +45,11 @@ import {
   deleteBundleImage,
   addBundleItem,
   updateBundleItem,
+  updateBundle,
 } from "@/lib/queries";
 import { uploadFilesParallel } from "@/lib/chunked-upload";
 import { mediaUrlFor, isVideoFilename } from "@/lib/media";
+import { compressVideos } from "@/lib/video-compressor";
 import { fetchClipboardTemplate, copyBundleToClipboard } from "@/lib/clipboard-template";
 import { useAuth } from "@/contexts/auth-context";
 import type { BundleItem } from "@/lib/types";
@@ -75,6 +79,13 @@ export default function BundleDetailPage() {
   const [addDraft, setAddDraft] = useState<BundleItemFormValues>(EMPTY_ITEM);
   const [addError, setAddError] = useState<string | null>(null);
   const [addSaving, setAddSaving] = useState(false);
+
+  // Edit-bundle dialog state
+  const [editBundleOpen, setEditBundleOpen] = useState(false);
+  const [editBundleCode, setEditBundleCode] = useState("");
+  const [editBundleName, setEditBundleName] = useState("");
+  const [editBundleError, setEditBundleError] = useState<string | null>(null);
+  const [editBundleSaving, setEditBundleSaving] = useState(false);
 
   // Copy-to-clipboard state
   const [copying, setCopying] = useState(false);
@@ -136,6 +147,49 @@ export default function BundleDetailPage() {
       toast({ title: "Copy failed", description: msg, variant: "error" });
     } finally {
       setCopying(false);
+    }
+  };
+
+  const openEditBundle = () => {
+    if (!bundleQuery.data) return;
+    setEditBundleCode(bundleQuery.data.bundle_code);
+    setEditBundleName(bundleQuery.data.bundle_name ?? "");
+    setEditBundleError(null);
+    setEditBundleOpen(true);
+  };
+
+  const handleSaveBundle = async () => {
+    if (!editBundleCode.trim()) {
+      setEditBundleError("Bundle code is required.");
+      return;
+    }
+    setEditBundleSaving(true);
+    try {
+      const payload: { bundle_code?: string; bundle_name?: string } = {};
+      if (editBundleCode.trim().toUpperCase() !== code) {
+        payload.bundle_code = editBundleCode.trim().toUpperCase();
+      }
+      const currentName = bundleQuery.data?.bundle_name ?? "";
+      if (editBundleName.trim() !== currentName) {
+        payload.bundle_name = editBundleName.trim();
+      }
+      if (Object.keys(payload).length === 0) {
+        setEditBundleOpen(false);
+        return;
+      }
+      await updateBundle(code, payload);
+      toast({ title: "Bundle updated", variant: "success" });
+      queryClient.invalidateQueries({ queryKey: ["bundles"] });
+      if (payload.bundle_code) {
+        router.replace(`/bundles/${encodeURIComponent(payload.bundle_code)}`);
+      } else {
+        refreshBundle();
+      }
+      setEditBundleOpen(false);
+    } catch {
+      setEditBundleError("Failed to update bundle.");
+    } finally {
+      setEditBundleSaving(false);
     }
   };
 
@@ -227,15 +281,30 @@ export default function BundleDetailPage() {
 
   const handleAddFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const list = Array.from(files);
-    setUploadProgress({ label: "Starting…", value: 0 });
+    let list = Array.from(files);
+
+    const hasVideos = list.some((f) => isVideoFilename(f.name));
+    if (hasVideos) {
+      setUploadProgress({ label: "Compressing videos…", value: 0 });
+      list = await compressVideos(list, ({ fileIndex, fileCount, overall }) => {
+        setUploadProgress({
+          label: fileCount > 0
+            ? `Compressing video ${fileIndex + 1}/${fileCount}…`
+            : "Preparing media…",
+          value: 0.3 * overall,
+        });
+      });
+    }
+
+    setUploadProgress({ label: "Starting upload…", value: hasVideos ? 0.3 : 0 });
     try {
+      const base = hasVideos ? 0.3 : 0;
       await uploadFilesParallel({
         bundleCode: code,
         files: list,
         fileConcurrency: 2,
         onProgress: ({ overall, label }) => {
-          setUploadProgress({ label, value: overall });
+          setUploadProgress({ label, value: base + (1 - base) * overall });
         },
       });
       toast({ title: "Media uploaded", variant: "success" });
@@ -260,6 +329,16 @@ export default function BundleDetailPage() {
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <h1 className="text-xl font-semibold">{code}</h1>
+          {canEdit && bundleQuery.data && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={openEditBundle}
+              aria-label="Edit bundle"
+            >
+              <Pencil className="h-4 w-4" />
+            </Button>
+          )}
           {bundleQuery.data && (
             <>
               <Button
@@ -493,6 +572,49 @@ export default function BundleDetailPage() {
           </div>
         )}
       </div>
+
+      {/* Edit-bundle dialog */}
+      <Dialog open={editBundleOpen} onOpenChange={(v) => !v && setEditBundleOpen(false)}>
+        <DialogContent onClose={() => setEditBundleOpen(false)}>
+          <DialogHeader>
+            <DialogTitle>Edit Bundle</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="edit-code">Bundle Code</Label>
+              <Input
+                id="edit-code"
+                value={editBundleCode}
+                onChange={(e) => setEditBundleCode(e.target.value.toUpperCase())}
+                disabled={editBundleSaving}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-name">Bundle Name</Label>
+              <Input
+                id="edit-name"
+                value={editBundleName}
+                onChange={(e) => setEditBundleName(e.target.value)}
+                placeholder="optional"
+                disabled={editBundleSaving}
+              />
+            </div>
+            {editBundleError && (
+              <Alert variant="destructive">
+                <AlertDescription>{editBundleError}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditBundleOpen(false)} disabled={editBundleSaving}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveBundle} disabled={editBundleSaving}>
+              {editBundleSaving ? <Spinner className="h-4 w-4" /> : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit-item dialog */}
       <Dialog open={!!editTarget} onOpenChange={(v) => !v && setEditTarget(null)}>

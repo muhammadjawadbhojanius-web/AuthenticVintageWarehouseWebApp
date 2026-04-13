@@ -65,7 +65,8 @@ class BundleOut(BaseModel):
 
 
 class BundleUpdate(BaseModel):
-    bundle_code: str
+    bundle_code: str | None = None
+    bundle_name: str | None = None
 
 # ---------- BUNDLE ITEM ----------
 

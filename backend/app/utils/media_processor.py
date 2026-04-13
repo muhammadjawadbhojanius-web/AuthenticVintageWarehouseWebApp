@@ -34,13 +34,17 @@ def process_video(input_path: str, output_path: str):
       -movflags +faststart move the moov atom to the start of the file so the
                            web video player can begin playback before the
                            whole file is downloaded
+      -vf scale=...        cap resolution at 720p (1280x720), preserve
+                           aspect ratio, only downscale, ensure even dims
+      -r 30                cap frame rate at 30 fps
       -map_metadata -1     strip all metadata (location, camera info, etc.)
       -y                   overwrite the output file if it exists
-    No -vf scale is set, so the resolution is preserved exactly.
     """
     command = [
         FFMPEG_BIN,
         "-i", input_path,
+        "-vf", "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+        "-r", "30",
         "-c:v", "libx264",
         "-crf", "23",
         "-preset", "fast",

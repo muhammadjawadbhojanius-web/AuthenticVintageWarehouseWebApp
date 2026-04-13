@@ -29,8 +29,11 @@ export async function updateBundleStatus(bundleCode: string, status: string) {
   await api().patch(`/bundles/${encodeURIComponent(bundleCode)}/status`, { status });
 }
 
-export async function updateBundleCode(oldCode: string, newCode: string) {
-  await api().patch(`/bundles/${encodeURIComponent(oldCode)}`, { bundle_code: newCode });
+export async function updateBundle(
+  oldCode: string,
+  update: { bundle_code?: string; bundle_name?: string },
+) {
+  await api().patch(`/bundles/${encodeURIComponent(oldCode)}`, update);
 }
 
 export async function addBundleItem(bundleCode: string, item: {

@@ -274,12 +274,20 @@ def _process_upload_job(upload_id: str, bundle_code: str):
         # Atomically claim the filename by renaming the assembled temp file
         # into place. os.rename is atomic on POSIX same-fs and will fail if
         # the target unexpectedly exists between our pick and the rename.
-        os.rename(assembled_path, final_path)
-        if is_image:
+        if is_video:
             try:
-                media_processor.process_image(final_path)
+                media_processor.process_video(assembled_path, final_path)
+                os.remove(assembled_path)
             except Exception as e:
-                logger.warning("Image processing failed for %s: %s", final_path, e)
+                logger.warning("Video processing failed for %s: %s — keeping original", final_path, e)
+                os.rename(assembled_path, final_path)
+        else:
+            os.rename(assembled_path, final_path)
+            if is_image:
+                try:
+                    media_processor.process_image(final_path)
+                except Exception as e:
+                    logger.warning("Image processing failed for %s: %s", final_path, e)
         job.progress = 0.95
         db.commit()
 
@@ -370,30 +378,40 @@ def upload_image(
     return {"message": "Media uploaded and processed"}
 
 
-# ---------- EDIT BUNDLE CODE ----------
+# ---------- EDIT BUNDLE ----------
 @router.patch("/{old_code}", response_model=schemas.BundleOut)
-def update_bundle_code(
+def update_bundle(
     old_code: str,
     bundle_update: schemas.BundleUpdate,
     db: Session = Depends(get_db),
 ):
-    new_code = bundle_update.bundle_code
-    if old_code == new_code:
-        return crud.get_bundle_by_code(db, old_code)
-
-    updated_bundle = crud.update_bundle_code(db, old_code, new_code)
-    if not updated_bundle:
+    bundle = crud.get_bundle_by_code(db, old_code)
+    if not bundle:
         raise HTTPException(status_code=404, detail="Bundle not found")
 
-    old_dir = os.path.join(UPLOADS_DIR, old_code)
-    new_dir = os.path.join(UPLOADS_DIR, new_code)
-    if os.path.exists(old_dir):
-        os.rename(old_dir, new_dir)
-        for img in updated_bundle.images:
-            img.image_path = img.image_path.replace(old_dir, new_dir)
+    # Update name if provided
+    if bundle_update.bundle_name is not None:
+        bundle.bundle_name = bundle_update.bundle_name or None
         db.commit()
+        db.refresh(bundle)
 
-    return updated_bundle
+    # Update code if provided and different
+    new_code = bundle_update.bundle_code
+    if new_code and new_code != old_code:
+        updated_bundle = crud.update_bundle_code(db, old_code, new_code)
+        if not updated_bundle:
+            raise HTTPException(status_code=404, detail="Bundle not found")
+
+        old_dir = os.path.join(UPLOADS_DIR, old_code)
+        new_dir = os.path.join(UPLOADS_DIR, new_code)
+        if os.path.exists(old_dir):
+            os.rename(old_dir, new_dir)
+            for img in updated_bundle.images:
+                img.image_path = img.image_path.replace(old_dir, new_dir)
+            db.commit()
+        bundle = updated_bundle
+
+    return bundle
 
 
 # ---------- UPDATE ITEM ----------
