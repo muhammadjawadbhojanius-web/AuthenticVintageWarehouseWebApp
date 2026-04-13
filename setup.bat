@@ -2,7 +2,7 @@
 REM ============================================================
 REM  Authentic Vintage Warehouse — Windows Setup (no Docker)
 REM  Run this once to install all dependencies.
-REM  Prerequisites: Python 3.12+, Node.js 20+, ffmpeg in PATH
+REM  Prerequisites: Python 3.12+, Node.js 20+, nginx, ffmpeg
 REM ============================================================
 
 echo.
@@ -24,9 +24,18 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+where nginx >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] nginx not found in PATH.
+    echo         Download from https://nginx.org/en/download.html
+    echo         Extract and add the folder to your system PATH.
+    pause
+    exit /b 1
+)
+
 where ffmpeg >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [WARNING] ffmpeg not found in PATH. Video compression will not work.
+    echo [WARNING] ffmpeg not found in PATH. Server-side video compression will not work.
     echo          Download from https://ffmpeg.org/download.html and add to PATH.
     echo.
 )
@@ -47,6 +56,10 @@ echo Installing Python dependencies...
 call venv\Scripts\activate.bat
 pip install --quiet -r requirements.txt
 call deactivate
+
+REM Create data and uploads directories
+if not exist "data" mkdir data
+if not exist "uploads" mkdir uploads
 
 echo Backend setup complete.
 
