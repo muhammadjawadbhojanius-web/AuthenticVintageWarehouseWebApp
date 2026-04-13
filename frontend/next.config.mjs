@@ -16,6 +16,17 @@ const nextConfig = {
   // front of us also gzips, but having both is fine — the browser
   // negotiates with whichever sends the encoded response first.
   compress: true,
+
+  // Proxy /api/* to the backend. In Docker, nginx handles this; when running
+  // directly on Windows (no Docker / no nginx), Next.js rewrites take over.
+  async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: "http://localhost:8080/:path*",
+      },
+    ];
+  },
 };
 
 export default nextConfig;
