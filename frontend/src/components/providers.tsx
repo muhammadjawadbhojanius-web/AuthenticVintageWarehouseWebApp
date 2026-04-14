@@ -4,7 +4,9 @@ import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "@/contexts/auth-context";
 import { SettingsProvider } from "@/contexts/settings-context";
+import { UploadQueueProvider } from "@/contexts/upload-queue-context";
 import { Toaster, ToastProvider } from "@/components/toaster";
+import { UploadQueueIndicator } from "@/components/upload-queue-indicator";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = React.useState(
@@ -23,10 +25,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <QueryClientProvider client={queryClient}>
       <SettingsProvider>
         <AuthProvider>
-          <ToastProvider>
-            {children}
-            <Toaster />
-          </ToastProvider>
+          <UploadQueueProvider>
+            <ToastProvider>
+              {children}
+              <Toaster />
+              <UploadQueueIndicator />
+            </ToastProvider>
+          </UploadQueueProvider>
         </AuthProvider>
       </SettingsProvider>
     </QueryClientProvider>

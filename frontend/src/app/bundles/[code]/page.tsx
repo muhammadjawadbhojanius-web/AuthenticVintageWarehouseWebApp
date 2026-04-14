@@ -20,7 +20,6 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Dialog,
@@ -47,9 +46,8 @@ import {
   updateBundleItem,
   updateBundle,
 } from "@/lib/queries";
-import { uploadFilesParallel } from "@/lib/chunked-upload";
 import { mediaUrlFor, isVideoFilename } from "@/lib/media";
-import { compressVideos } from "@/lib/video-compressor";
+import { useUploadQueue } from "@/contexts/upload-queue-context";
 import { fetchClipboardTemplate, copyBundleToClipboard } from "@/lib/clipboard-template";
 import { useAuth } from "@/contexts/auth-context";
 import type { BundleItem } from "@/lib/types";
@@ -62,6 +60,7 @@ export default function BundleDetailPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { role } = useAuth();
+  const uploadQueue = useUploadQueue();
   const canEdit = role === "Admin" || role === "Content Creators";
 
   const [confirmItem, setConfirmItem] = useState<number | null>(null);
@@ -91,7 +90,6 @@ export default function BundleDetailPage() {
   const [copying, setCopying] = useState(false);
 
   // Add-media state
-  const [uploadProgress, setUploadProgress] = useState<{ label: string; value: number } | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
@@ -279,45 +277,15 @@ export default function BundleDetailPage() {
     }
   };
 
-  const handleAddFiles = async (files: FileList | null) => {
+  const handleAddFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    let list = Array.from(files);
+    const list = Array.from(files);
 
-    const hasVideos = list.some((f) => isVideoFilename(f.name));
-    if (hasVideos) {
-      setUploadProgress({ label: "Compressing videos…", value: 0 });
-      list = await compressVideos(list, ({ fileIndex, fileCount, overall }) => {
-        setUploadProgress({
-          label: fileCount > 0
-            ? `Compressing video ${fileIndex + 1}/${fileCount}…`
-            : "Preparing media…",
-          value: 0.3 * overall,
-        });
-      });
-    }
+    uploadQueue.enqueue({ bundleCode: code, files: list });
 
-    setUploadProgress({ label: "Starting upload…", value: hasVideos ? 0.3 : 0 });
-    try {
-      const base = hasVideos ? 0.3 : 0;
-      await uploadFilesParallel({
-        bundleCode: code,
-        files: list,
-        fileConcurrency: 2,
-        onProgress: ({ overall, label }) => {
-          setUploadProgress({ label, value: base + (1 - base) * overall });
-        },
-      });
-      toast({ title: "Media uploaded", variant: "success" });
-      refreshBundle();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast({ title: "Upload failed", description: msg, variant: "error" });
-    } finally {
-      setUploadProgress(null);
-      if (photoInputRef.current) photoInputRef.current.value = "";
-      if (videoInputRef.current) videoInputRef.current.value = "";
-      if (galleryInputRef.current) galleryInputRef.current.value = "";
-    }
+    if (photoInputRef.current) photoInputRef.current.value = "";
+    if (videoInputRef.current) videoInputRef.current.value = "";
+    if (galleryInputRef.current) galleryInputRef.current.value = "";
   };
 
   return (
@@ -413,7 +381,6 @@ export default function BundleDetailPage() {
                       <Button
                         variant="outline"
                         className="h-16 flex-col text-xs"
-                        disabled={!!uploadProgress}
                         onClick={() => photoInputRef.current?.click()}
                       >
                         <Camera className="h-4 w-4" />
@@ -422,7 +389,6 @@ export default function BundleDetailPage() {
                       <Button
                         variant="outline"
                         className="h-16 flex-col text-xs"
-                        disabled={!!uploadProgress}
                         onClick={() => videoInputRef.current?.click()}
                       >
                         <VideoIcon className="h-4 w-4" />
@@ -431,19 +397,12 @@ export default function BundleDetailPage() {
                       <Button
                         variant="outline"
                         className="h-16 flex-col text-xs"
-                        disabled={!!uploadProgress}
                         onClick={() => galleryInputRef.current?.click()}
                       >
                         <ImagePlus className="h-4 w-4" />
                         Gallery
                       </Button>
                     </div>
-                    {uploadProgress && (
-                      <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground">{uploadProgress.label}</p>
-                        <Progress value={uploadProgress.value * 100} />
-                      </div>
-                    )}
                   </>
                 )}
 

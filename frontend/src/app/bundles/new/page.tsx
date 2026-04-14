@@ -30,9 +30,8 @@ import {
   addBundleItem,
   updateBundleStatus,
 } from "@/lib/queries";
-import { uploadFilesParallel } from "@/lib/chunked-upload";
 import { isVideoFilename } from "@/lib/media";
-import { compressVideos } from "@/lib/video-compressor";
+import { useUploadQueue } from "@/contexts/upload-queue-context";
 
 interface DraftItem {
   gender: string;
@@ -64,6 +63,7 @@ export default function NewBundlePage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const uploadQueue = useUploadQueue();
 
   const photoInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
@@ -163,37 +163,17 @@ export default function NewBundlePage() {
         });
       }
 
-      // 3) Compress videos client-side (hardware-accelerated, 720p/30fps)
-      setProgress({ label: "Compressing videos…", value: 0.15 });
-      const processedMedia = await compressVideos(media, ({ fileIndex, fileCount, overall }) => {
-        setProgress({
-          label: fileCount > 0
-            ? `Compressing video ${fileIndex + 1}/${fileCount}…`
-            : "Preparing media…",
-          value: 0.15 + 0.25 * overall,
-        });
+      // 3) Hand compression+upload off to the background queue. The user
+      // returns to the bundle list immediately; the status will flip to
+      // "uploaded" once the queue finishes.
+      const code = bundleCode.trim().toUpperCase();
+      uploadQueue.enqueue({
+        bundleCode: code,
+        files: media,
+        onComplete: () => updateBundleStatus(code, "uploaded"),
       });
-
-      // 4) Upload all media in parallel
-      await uploadFilesParallel({
-        bundleCode: bundleCode.trim().toUpperCase(),
-        files: processedMedia,
-        fileConcurrency: 2,
-        onProgress: ({ overall, label }) => {
-          setProgress({
-            label,
-            value: 0.40 + 0.60 * overall,
-          });
-        },
-      });
-
-      // 5) Mark uploaded
-      setProgress({ label: "Finishing…", value: 0.99 });
-      await updateBundleStatus(bundleCode.trim().toUpperCase(), "uploaded");
-      setProgress({ label: "Done", value: 1 });
 
       queryClient.invalidateQueries({ queryKey: ["bundles"] });
-      toast({ title: "Bundle uploaded", variant: "success" });
       router.replace("/bundles");
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { Plus, X, DownloadCloud, Inbox, RefreshCw, Image as ImageIcon, Video, Download, Search } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
-import { ConnectivityRibbon } from "@/components/connectivity-ribbon";
 import { BundleCard } from "@/components/bundle-card";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -291,8 +290,6 @@ export default function BundlesPage() {
           </div>
         )}
       </div>
-
-      <ConnectivityRibbon />
 
       {/* FAB */}
       <button
