@@ -68,6 +68,43 @@ if errorlevel 1 (
 
 echo [OK] Prerequisites present.
 
+:: ---------- Stop running services ----------
+:: Services hold file locks on .next\, the venv, and nginx workers;
+:: kill them before pulling new code or rebuilding. stop.bat is a no-op
+:: if nothing is running.
+if exist "stop.bat" (
+    echo [*] Stopping any running services before update...
+    call "stop.bat"
+)
+
+:: ---------- Pull latest code from Git ----------
+:: Only runs if this directory is a git clone. If the user copied the
+:: source as a zip, skip silently.
+if exist ".git" (
+    where git >nul 2>&1
+    if errorlevel 1 (
+        echo [!] Git is not on PATH. Skipping code update.
+    ) else (
+        echo [*] Pulling latest code from origin/main...
+        git fetch origin
+        if errorlevel 1 (
+            echo [!] git fetch failed. Check your network and GitHub access.
+            echo     Continuing with the code currently on disk.
+        ) else (
+            git pull --ff-only origin main
+            if errorlevel 1 (
+                echo [!] git pull failed — probably local modifications or a diverged branch.
+                echo     Resolve manually with: git status
+                echo     Continuing with the code currently on disk.
+            ) else (
+                echo [OK] Code is up to date with origin/main.
+            )
+        )
+    )
+) else (
+    echo [*] Not a git clone — skipping code update.
+)
+
 :: ---------- Nginx (download if missing) ----------
 echo [*] Ensuring Nginx is available...
 if not exist "nginx-bin\nginx.exe" (
