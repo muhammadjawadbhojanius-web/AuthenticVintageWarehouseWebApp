@@ -1,26 +1,25 @@
-# Backend
-backend/venv/
-backend/__pycache__/
+# --- Backend (Python) ---
+backend/.venv/
+backend/.env
 backend/warehouse.db
 backend/uploads/
-backend/.env
-backend/app/__pycache__/
-backend/app/routers/__pycache__/
+backend/data/
+__pycache__/
+*.pyc
+*.pyo
 
-# Frontend
-**/build/
-**/.dart_tool/
-**/.flutter-plugins
-**/.flutter-plugins-dependencies
-**/.packages
-**/.metadata
-**/pubspec.lock
-**/*.iml
+# --- Windows native runtime ---
+nginx-bin/
 
-# IDEs
+# --- Claude ---
+.claude/
+.claudeignore
+
+# --- IDEs ---
 .idea/
 .vscode/
 
-# OS
+# --- OS ---
 .DS_Store
 Thumbs.db
+*.swp
