@@ -7,7 +7,6 @@ import { SettingsProvider } from "@/contexts/settings-context";
 import { UploadQueueProvider } from "@/contexts/upload-queue-context";
 import { Toaster, ToastProvider } from "@/components/toaster";
 import { UploadQueueIndicator } from "@/components/upload-queue-indicator";
-import { TestBanner } from "@/components/test-banner";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = React.useState(
@@ -31,7 +30,6 @@ export function Providers({ children }: { children: React.ReactNode }) {
               {children}
               <Toaster />
               <UploadQueueIndicator />
-              <TestBanner />
             </ToastProvider>
           </UploadQueueProvider>
         </AuthProvider>
