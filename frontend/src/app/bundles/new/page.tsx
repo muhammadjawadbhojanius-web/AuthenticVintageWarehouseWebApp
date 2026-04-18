@@ -1,17 +1,9 @@
 "use client";
 
-import { useState, useRef, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  ArrowLeft,
-  Camera,
-  Video,
-  ImagePlus,
-  Plus,
-  Trash2,
-  Loader2,
-} from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,6 +24,7 @@ import {
 } from "@/lib/queries";
 import { isVideoFilename } from "@/lib/media";
 import { useUploadQueue } from "@/contexts/upload-queue-context";
+import { MediaPicker } from "@/components/media-picker";
 
 interface DraftItem {
   gender: string;
@@ -64,10 +57,6 @@ export default function NewBundlePage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const uploadQueue = useUploadQueue();
-
-  const photoInputRef = useRef<HTMLInputElement>(null);
-  const videoInputRef = useRef<HTMLInputElement>(null);
-  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   const [media, setMedia] = useState<File[]>([]);
   const [bundleCode, setBundleCode] = useState("");
@@ -133,10 +122,6 @@ export default function NewBundlePage() {
       setError("Add at least one item.");
       return;
     }
-    if (media.length === 0) {
-      setError("Add at least one photo or video.");
-      return;
-    }
 
     setSubmitting(true);
     try {
@@ -163,15 +148,16 @@ export default function NewBundlePage() {
         });
       }
 
-      // 3) Hand compression+upload off to the background queue. The user
-      // returns to the bundle list immediately; the status will flip to
-      // "uploaded" once the queue finishes.
+      // 3) If there's any media, hand compression+upload off to the
+      // background queue. Media-less bundles skip this entirely.
       const code = bundleCode.trim().toUpperCase();
-      uploadQueue.enqueue({
-        bundleCode: code,
-        files: media,
-        onComplete: () => updateBundleStatus(code, "uploaded"),
-      });
+      if (media.length > 0) {
+        uploadQueue.enqueue({
+          bundleCode: code,
+          files: media,
+          onComplete: () => updateBundleStatus(code, "uploaded"),
+        });
+      }
 
       queryClient.invalidateQueries({ queryKey: ["bundles"] });
       router.replace("/bundles");
@@ -198,60 +184,12 @@ export default function NewBundlePage() {
         <Card>
           <CardContent className="space-y-3 pt-6">
             <h2 className="text-sm font-semibold">Media</h2>
-            <div className="grid grid-cols-3 gap-2">
-              <input
-                ref={photoInputRef}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                multiple
-                className="hidden"
-                onChange={(e) => handleAddFiles(e.target.files)}
-              />
-              <input
-                ref={videoInputRef}
-                type="file"
-                accept="video/*"
-                capture="environment"
-                className="hidden"
-                onChange={(e) => handleAddFiles(e.target.files)}
-              />
-              <input
-                ref={galleryInputRef}
-                type="file"
-                accept="image/*,video/*"
-                multiple
-                className="hidden"
-                onChange={(e) => handleAddFiles(e.target.files)}
-              />
-              <Button
-                variant="outline"
-                className="h-20 flex-col"
-                disabled={submitting}
-                onClick={() => photoInputRef.current?.click()}
-              >
-                <Camera className="h-5 w-5" />
-                Photo
-              </Button>
-              <Button
-                variant="outline"
-                className="h-20 flex-col"
-                disabled={submitting}
-                onClick={() => videoInputRef.current?.click()}
-              >
-                <Video className="h-5 w-5" />
-                Video
-              </Button>
-              <Button
-                variant="outline"
-                className="h-20 flex-col"
-                disabled={submitting}
-                onClick={() => galleryInputRef.current?.click()}
-              >
-                <ImagePlus className="h-5 w-5" />
-                Gallery
-              </Button>
-            </div>
+            <MediaPicker
+              onFiles={(f) => handleAddFiles(f)}
+              disabled={submitting}
+              size="lg"
+            />
+
 
             {previewUrls.length > 0 && (
               <div className="grid grid-cols-3 gap-2">

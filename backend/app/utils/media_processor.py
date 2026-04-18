@@ -2,7 +2,7 @@ import json
 import logging
 import shutil
 import subprocess
-from PIL import Image
+from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +22,25 @@ MAX_REMUX_FPS = 30.5  # small tolerance for 29.97
 
 
 def process_image(input_path: str):
-    """Strips EXIF metadata from an image by re-saving it."""
+    """
+    Physically rotates the image to match its EXIF Orientation tag, then
+    strips all EXIF metadata. iPhones record sensor data in a fixed
+    landscape layout and rely on the Orientation tag to tell viewers to
+    rotate for display; stripping EXIF without rotating first leaves the
+    image sideways.
+    """
     with Image.open(input_path) as img:
-        data = list(img.getdata())
-        out_img = Image.new(img.mode, img.size)
-        out_img.putdata(data)
-        out_img.save(input_path)
+        rotated = ImageOps.exif_transpose(img)
+        # Preserve JPEG quality reasonably and avoid ballooning file size.
+        save_kwargs = {}
+        fmt = (img.format or "").upper()
+        if fmt in ("JPEG", "JPG"):
+            save_kwargs = {"format": "JPEG", "quality": 90, "optimize": True}
+        elif fmt == "PNG":
+            save_kwargs = {"format": "PNG", "optimize": True}
+        elif fmt == "WEBP":
+            save_kwargs = {"format": "WEBP", "quality": 90}
+        rotated.save(input_path, **save_kwargs)
 
 
 def _probe_video(path: str) -> dict | None:

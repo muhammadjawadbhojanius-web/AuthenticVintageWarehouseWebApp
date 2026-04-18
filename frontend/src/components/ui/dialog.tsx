@@ -25,12 +25,20 @@ export function Dialog({ open, onOpenChange, children }: DialogProps) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      // h-[100dvh] uses the dynamic viewport height so the dialog is
+      // centered against the *visible* viewport on iOS (not counting the
+      // URL-bar area that is included in plain 100vh). Falls back to
+      // 100vh on browsers that don't support dvh.
+      className="fixed inset-x-0 top-0 z-50 flex h-screen h-[100dvh] items-center justify-center p-4"
+    >
       <div
         className="absolute inset-0 bg-black/50 backdrop-blur-sm animate-in fade-in"
         onClick={() => onOpenChange(false)}
       />
-      <div className="relative z-10 w-full max-w-lg">{children}</div>
+      <div className="relative z-10 flex max-h-full w-full max-w-lg flex-col">
+        {children}
+      </div>
     </div>
   );
 }
@@ -47,7 +55,10 @@ export function DialogContent({
   return (
     <div
       className={cn(
-        "relative grid w-full gap-4 rounded-lg border bg-background p-6 shadow-lg",
+        // flex-col + min-h-0 lets any `overflow-y-auto` child (media list,
+        // long forms) size itself against the remaining space instead of
+        // pushing the whole dialog past the viewport bottom.
+        "relative flex w-full min-h-0 flex-col gap-4 rounded-lg border bg-background p-6 shadow-lg",
         className
       )}
     >

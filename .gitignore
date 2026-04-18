@@ -7,19 +7,43 @@ backend/data/
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 
-# --- Windows native runtime ---
+# --- Frontend (Node) ---
+# frontend/.gitignore also covers these; duplicated here as belt-and-braces
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Windows native runtime (setup.bat artifacts) ---
 nginx-bin/
+nginx-1.*/
+nginx.zip
+
+# --- Env files ---
+.env
+.env.local
+.env.*.local
 
 # --- Claude ---
 .claude/
 .claudeignore
+CLAUDE.md
+memory/
 
 # --- IDEs ---
 .idea/
 .vscode/
+*.swp
+*.swo
 
 # --- OS ---
 .DS_Store
 Thumbs.db
-*.swp
+desktop.ini
+
+compose.port-override.yml

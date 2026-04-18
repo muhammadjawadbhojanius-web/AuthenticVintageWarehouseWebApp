@@ -8,9 +8,16 @@ on a single host with no internet required after the first build.
   installed inside the image
 - **Reverse proxy** — nginx, the only container that exposes a port
 
+Two deployment paths are supported and live in the same tree:
+
+| Path | Host | Entrypoint | Nginx config |
+|---|---|---|---|
+| Docker (recommended) | Linux / macOS / Windows with Docker | `docker compose up --build -d` | `nginx/default.conf` |
+| Windows native | Windows 10 1809+ / Windows 11 | `setup.bat` then `run.bat` | `nginx/windows.conf` |
+
 ---
 
-## Quick start
+## Quick start — Docker
 
 ### Prerequisites
 
@@ -78,6 +85,45 @@ docker compose down
 sudo ip link set <iface> down       # or just unplug
 docker compose up --build -d        # should succeed using only cached layers
 ```
+
+---
+
+## Quick start — Windows native
+
+If Docker isn't available on the target machine, the whole stack can run
+directly on Windows as three local processes (uvicorn, `next start`, and a
+bundled nginx).
+
+### Prerequisites
+
+- Python 3.12+ on PATH
+- Node.js 20 LTS on PATH
+- FFmpeg — `setup.bat` will auto-install it via `winget` if missing
+
+### First-time setup
+
+Double-click or run from `cmd`:
+
+```cmd
+setup.bat
+```
+
+This pulls the latest code (if the directory is a git clone), downloads
+nginx 1.26.2 into `nginx-bin\`, creates a Python venv under
+`backend\.venv\`, installs backend + frontend dependencies, and builds the
+Next.js standalone output. It's re-runnable — just run it again to update
+after `git pull`.
+
+### Start / stop
+
+```cmd
+run.bat          # spawns backend, frontend, and nginx in separate windows
+stop.bat         # kills all three by port
+```
+
+The app is reachable at `http://localhost:8082` and on the LAN at
+`http://<host-ip>:8082`. Windows Firewall must allow inbound TCP 8082 for
+LAN access.
 
 ---
 
@@ -186,7 +232,29 @@ reset (`/users/reset-password` returns 403 for any user with role `Admin`).
 
 ### Port 8082 is taken
 
-Edit `docker-compose.yml` and change the nginx port mapping:
+The cleanest workaround is a local **Compose override file** that Compose
+merges on top of `docker-compose.yml`. Create `compose.port-override.yml`
+in the project root:
+
+```yaml
+services:
+  nginx:
+    ports: !override
+      - "8085:80"      # or whatever free port you want
+```
+
+The `!override` tag replaces the base `ports` list instead of appending
+to it. Bring the stack up with both files:
+
+```bash
+docker compose -f docker-compose.yml -f compose.port-override.yml up -d
+```
+
+This file is gitignored on purpose — it's a local, per-host setting, not
+something to commit.
+
+Or, if you'd rather not bother with an override, just edit
+`docker-compose.yml` directly:
 
 ```yaml
 nginx:
@@ -195,6 +263,9 @@ nginx:
 ```
 
 Then `docker compose up -d` to recreate the nginx container.
+
+On the Windows native path, edit the `listen 8082;` line in
+`nginx/windows.conf` instead.
 
 ### Big videos won't upload
 

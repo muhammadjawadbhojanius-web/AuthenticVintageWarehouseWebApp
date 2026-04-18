@@ -15,14 +15,19 @@ import type { ConversionAudioOptions } from "mediabunny";
 // Configuration — compression rules
 // ---------------------------------------------------------------------------
 //
-// Files ≤ 100 MB are left alone (server-side metadata strip is fast).
+// Decision is driven by the backend's stream-copy remux window (H.264 at
+// ≤720p / ≤30 fps). Anything that falls inside that window is cheap for
+// the server to re-wrap; anything outside forces a CPU-bound libx264
+// transcode. We re-encode on the client whenever that's the case, so the
+// server's job is always the fast one.
 //
-// Files > 100 MB get one of three treatments:
 //   1. fps > 30 OR resolution > 720p  →  re-encode to fit (720p / 30 fps)
-//                                        at the default bitrate.
-//   2. Already 720p @ 30 fps         →  re-encode same dims/fps but at a
-//                                        bitrate targeted to bring the file
-//                                        just under 100 MB.
+//                                        at the default bitrate, regardless
+//                                        of file size.
+//   2. Already ≤720p / ≤30 fps, file > 100 MB  →  re-encode same dims/fps
+//                                        with a bitrate targeted to bring
+//                                        the file just under 100 MB.
+//   3. Already ≤720p / ≤30 fps, file ≤ 100 MB  →  skip. Backend remuxes.
 
 const COMPRESS_THRESHOLD_BYTES = 100 * 1024 * 1024; // 100 MB
 const TARGET_SIZE_BYTES = 95 * 1024 * 1024;         // 95 MB target (5MB margin)
@@ -106,15 +111,18 @@ function planCompression(
   srcH: number,
   srcFps: number,
   durationSec: number,
+  sizeBytes: number,
 ): CompressionPlan | null {
   const longEdge = Math.max(srcW, srcH);
   const shortEdge = Math.min(srcW, srcH);
   const fpsTooHigh = srcFps > FPS_TOLERANCE;
   const resTooHigh = longEdge > TARGET_LONG_EDGE || shortEdge > TARGET_SHORT_EDGE;
 
-  // Case A/B/C: fps and/or resolution exceed targets — fit to 720p/30fps
-  // at the default bitrate. Aspect ratio is preserved by scaling the long
-  // edge to 1280 and the short edge to ≤720 (whichever is more restrictive).
+  // Case A/B/C: fps and/or resolution exceed the backend remux window —
+  // fit to 720p/30fps at the default bitrate. Aspect ratio is preserved by
+  // scaling the long edge to 1280 and the short edge to ≤720 (whichever
+  // is more restrictive). This runs regardless of file size: the point is
+  // to keep the server out of a libx264 transcode.
   if (fpsTooHigh || resTooHigh) {
     const scale = resTooHigh
       ? Math.min(TARGET_LONG_EDGE / longEdge, TARGET_SHORT_EDGE / shortEdge, 1)
@@ -139,8 +147,14 @@ function planCompression(
     };
   }
 
-  // Case D: already at 720p/30fps but file is huge — re-encode same dims
-  // and fps with a bitrate computed to land just under 100 MB.
+  // Already inside the remux window. Only re-encode if the file is also
+  // too big to upload comfortably — otherwise let the backend stream-copy.
+  if (sizeBytes <= COMPRESS_THRESHOLD_BYTES) {
+    return null;
+  }
+
+  // Case D: already at ≤720p/≤30fps but file > 100 MB — re-encode same
+  // dims and fps with a bitrate computed to land just under 100 MB.
   if (durationSec <= 0) {
     // No duration → can't compute target bitrate, skip.
     return null;
@@ -189,7 +203,7 @@ async function compressWithMediabunny(
     ]);
     const srcFps = stats.averagePacketRate || 0;
 
-    const plan = planCompression(srcW, srcH, srcFps, durationSec);
+    const plan = planCompression(srcW, srcH, srcFps, durationSec, file.size);
     if (!plan) {
       console.info(
         `[video-compressor] No actionable plan (${srcW}x${srcH} @ ${srcFps.toFixed(1)}fps, ${durationSec.toFixed(1)}s), skipping`,
@@ -314,11 +328,19 @@ async function compressWithMediaRecorder(
     const srcH = video.videoHeight;
     const longEdge = Math.max(srcW, srcH);
     const shortEdge = Math.min(srcW, srcH);
-    const scale = Math.min(
-      TARGET_LONG_EDGE / longEdge,
-      TARGET_SHORT_EDGE / shortEdge,
-      1,
-    );
+    const resTooHigh = longEdge > TARGET_LONG_EDGE || shortEdge > TARGET_SHORT_EDGE;
+
+    // If the source already fits the backend remux window and isn't
+    // oversized, skip re-encoding. (MediaRecorder can't cheaply probe
+    // fps, so we trust dimensions + file size as a proxy.)
+    if (!resTooHigh && file.size <= COMPRESS_THRESHOLD_BYTES) {
+      onProgress?.(1);
+      return file;
+    }
+
+    const scale = resTooHigh
+      ? Math.min(TARGET_LONG_EDGE / longEdge, TARGET_SHORT_EDGE / shortEdge, 1)
+      : 1;
     const portrait = srcH >= srcW;
     const outLong = Math.round(longEdge * scale) & ~1;
     const outShort = Math.round(shortEdge * scale) & ~1;
@@ -410,13 +432,9 @@ export async function compressVideo(
 ): Promise<File> {
   const { onProgress } = opts;
 
-  if (file.size <= COMPRESS_THRESHOLD_BYTES) {
-    console.info(
-      `[video-compressor] ${(file.size / 1e6).toFixed(1)}MB ≤ 100MB threshold, skipping`,
-    );
-    onProgress?.(1);
-    return file;
-  }
+  // No blanket size gate: the planner returns null for sources that are
+  // already inside the backend remux window AND under the size threshold,
+  // so mediabunny / MediaRecorder bail out early in those cases.
 
   if (hasWebCodecs()) {
     try {

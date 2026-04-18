@@ -1,18 +1,9 @@
 "use client";
 
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  ArrowLeft,
-  Trash2,
-  Pencil,
-  Plus,
-  Camera,
-  Video as VideoIcon,
-  ImagePlus,
-  ClipboardCopy,
-} from "lucide-react";
+import { ArrowLeft, Trash2, Pencil, Plus, ClipboardCopy } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -47,7 +38,9 @@ import {
   updateBundle,
 } from "@/lib/queries";
 import { mediaUrlFor, isVideoFilename } from "@/lib/media";
+import { mediaStatusLabel } from "@/lib/media-status";
 import { useUploadQueue } from "@/contexts/upload-queue-context";
+import { MediaPicker } from "@/components/media-picker";
 import { fetchClipboardTemplate, copyBundleToClipboard } from "@/lib/clipboard-template";
 import { useAuth } from "@/contexts/auth-context";
 import type { BundleItem } from "@/lib/types";
@@ -89,10 +82,6 @@ export default function BundleDetailPage() {
   // Copy-to-clipboard state
   const [copying, setCopying] = useState(false);
 
-  // Add-media state
-  const photoInputRef = useRef<HTMLInputElement>(null);
-  const videoInputRef = useRef<HTMLInputElement>(null);
-  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   const bundleQuery = useQuery({
     queryKey: ["bundle", code],
@@ -279,13 +268,7 @@ export default function BundleDetailPage() {
 
   const handleAddFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const list = Array.from(files);
-
-    uploadQueue.enqueue({ bundleCode: code, files: list });
-
-    if (photoInputRef.current) photoInputRef.current.value = "";
-    if (videoInputRef.current) videoInputRef.current.value = "";
-    if (galleryInputRef.current) galleryInputRef.current.value = "";
+    uploadQueue.enqueue({ bundleCode: code, files: Array.from(files) });
   };
 
   return (
@@ -324,9 +307,19 @@ export default function BundleDetailPage() {
                 )}
                 Copy
               </Button>
-              <Badge variant="secondary">
-                {bundleQuery.data.status.toUpperCase()}
-              </Badge>
+              {(() => {
+                const uploading = uploadQueue.tasks.some(
+                  (t) =>
+                    t.bundleCode === code &&
+                    (t.status === "queued" || t.status === "running"),
+                );
+                const hasMedia = (bundleQuery.data.images?.length ?? 0) > 0;
+                return (
+                  <Badge variant={uploading ? "warning" : hasMedia ? "success" : "secondary"}>
+                    {uploading ? "Media in progress" : mediaStatusLabel(bundleQuery.data.images)}
+                  </Badge>
+                );
+              })()}
             </>
           )}
         </div>
@@ -352,57 +345,10 @@ export default function BundleDetailPage() {
 
                 {canEdit && (
                   <>
-                    <input
-                      ref={photoInputRef}
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      multiple
-                      className="hidden"
-                      onChange={(e) => handleAddFiles(e.target.files)}
+                    <MediaPicker
+                      onFiles={(f) => handleAddFiles(f)}
+                      size="sm"
                     />
-                    <input
-                      ref={videoInputRef}
-                      type="file"
-                      accept="video/*"
-                      capture="environment"
-                      className="hidden"
-                      onChange={(e) => handleAddFiles(e.target.files)}
-                    />
-                    <input
-                      ref={galleryInputRef}
-                      type="file"
-                      accept="image/*,video/*"
-                      multiple
-                      className="hidden"
-                      onChange={(e) => handleAddFiles(e.target.files)}
-                    />
-                    <div className="grid grid-cols-3 gap-2">
-                      <Button
-                        variant="outline"
-                        className="h-16 flex-col text-xs"
-                        onClick={() => photoInputRef.current?.click()}
-                      >
-                        <Camera className="h-4 w-4" />
-                        Photo
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="h-16 flex-col text-xs"
-                        onClick={() => videoInputRef.current?.click()}
-                      >
-                        <VideoIcon className="h-4 w-4" />
-                        Video
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="h-16 flex-col text-xs"
-                        onClick={() => galleryInputRef.current?.click()}
-                      >
-                        <ImagePlus className="h-4 w-4" />
-                        Gallery
-                      </Button>
-                    </div>
                   </>
                 )}
 
