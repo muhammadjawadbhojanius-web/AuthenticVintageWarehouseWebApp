@@ -5,6 +5,14 @@ import type { Bundle, User } from "./types";
 export async function fetchBundles(search?: string): Promise<Bundle[]> {
   const url = search ? `/bundles/?search=${encodeURIComponent(search)}` : "/bundles/";
   const res = await api().get<Bundle[]>(url);
+  // If the backend is misconfigured (wrong base URL pointed at an HTML
+  // page, a proxy returning an error doc, etc.) axios hands us the raw
+  // body as a string. Reject anything that isn't an array here so React
+  // Query enters isError cleanly instead of letting a string leak into
+  // components that call .map on it.
+  if (!Array.isArray(res.data)) {
+    throw new Error("Unexpected response from /bundles — not a list");
+  }
   return res.data;
 }
 
@@ -80,6 +88,9 @@ export async function deleteBundleImage(bundleCode: string, imageId: number) {
 // Users
 export async function fetchUsers(): Promise<User[]> {
   const res = await api().get<User[]>("/users/");
+  if (!Array.isArray(res.data)) {
+    throw new Error("Unexpected response from /users — not a list");
+  }
   return res.data;
 }
 

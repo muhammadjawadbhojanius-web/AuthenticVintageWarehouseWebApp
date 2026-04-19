@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
+import { BundleDetailSkeleton } from "@/components/skeletons";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -324,11 +325,7 @@ export default function BundleDetailPage() {
           )}
         </div>
 
-        {bundleQuery.isLoading && (
-          <div className="flex justify-center py-12">
-            <Spinner />
-          </div>
-        )}
+        {bundleQuery.isLoading && <BundleDetailSkeleton />}
 
         {bundleQuery.isSuccess && (
           <div className="space-y-4">

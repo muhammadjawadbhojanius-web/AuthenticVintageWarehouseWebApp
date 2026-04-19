@@ -1,162 +1,115 @@
 # Authentic Vintage Warehouse
 
-Internal warehouse management app for vintage clothing bundles. Runs entirely
-on a single host with no internet required after the first build.
+Internal warehouse management app for vintage clothing bundles. Runs on a
+single host and needs **no internet at runtime** — all fonts, packages,
+ffmpeg and Swagger UI assets are bundled at build time.
 
-- **Frontend** — Next.js 14 + TypeScript + Tailwind, served by `next start`
-- **Backend** — FastAPI + SQLite, with chunked resumable uploads and ffmpeg
-  installed inside the image
-- **Reverse proxy** — nginx, the only container that exposes a port
+- **Frontend** — Next.js 14 (App Router, standalone) + TypeScript + Tailwind
+- **Backend** — FastAPI + SQLite + bcrypt/JWT + ffmpeg (chunked resumable uploads)
+- **Reverse proxy** — nginx, the only process that binds a host port
 
-Two deployment paths are supported and live in the same tree:
+---
 
-| Path | Host | Entrypoint | Nginx config |
+## Deployment paths
+
+Both paths live in the same tree. Pick one per machine.
+
+| Path | Host requirements | Start command | Nginx config |
 |---|---|---|---|
-| Docker (recommended) | Linux / macOS / Windows with Docker | `docker compose up --build -d` | `nginx/default.conf` |
-| Windows native | Windows 10 1809+ / Windows 11 | `setup.bat` then `run.bat` | `nginx/windows.conf` |
+| **Docker** (recommended) | Docker Desktop + Docker Compose v2 | `docker compose up --build -d` | `nginx/default.conf` |
+| **Windows native** | Python 3.12+, Node 20 LTS, ffmpeg (auto-installed via winget) | `setup.bat` → `run.bat` | `nginx/windows.conf` |
+
+The app listens on **`http://localhost:8082`** in both cases (see
+Troubleshooting if that port is taken).
 
 ---
 
 ## Quick start — Docker
 
-### Prerequisites
-
-You only need **Docker** with Docker Compose v2 (the `docker compose` plugin,
-not the old `docker-compose` script). Nothing else needs to be installed
-on the host — no Node, no Python, no ffmpeg.
-
-### One-time setup (with internet)
-
-This pulls the base images, downloads the npm and pip packages, and bakes
-everything into local Docker layers. After this step the host can be taken
-fully offline.
-
 ```bash
-cd /home/burhan/AuthenticVintageWarehouseWebApp
-docker compose up --build -d
+docker compose up --build -d        # first time; builds and runs
+docker compose logs -f              # tail all services
+docker compose down                 # stop
 ```
 
-The first build takes a few minutes. Subsequent rebuilds reuse cached layers.
+Open `http://localhost:8082`. On the LAN, replace `localhost` with the
+host's IP (`http://192.168.1.50:8082`).
 
-### Open the app
+The very first user who registers becomes **Admin** and is auto-approved.
+Subsequent registrations land in *pending* until an admin approves them.
 
-```
-http://localhost:8082
-```
+### Offline guarantee
 
-On the same LAN, replace `localhost` with the host's IP, e.g.
-`http://192.168.1.50:8082`.
-
-### Default admin
-
-The very first user that registers becomes Admin and is auto-approved.
-
-If you want to skip registration, use the smoke-test admin created during
-setup:
-
-```
-username: admin
-password: admin
-```
-
-(Change this in the UI by signing up a new admin and removing the default
-account, **or** by editing the `users` table directly in the SQLite DB.)
-
----
-
-## Offline operation
-
-Everything required at runtime is bundled into the Docker images during the
-first build:
+Everything required at runtime is baked into the Docker images on the
+first `--build`:
 
 | Asset | Where it lives |
 |---|---|
-| Inter font (woff2) | `frontend/public/fonts/` baked into the image |
+| Inter font (woff2) | `frontend/public/fonts/` → baked into the image |
 | shadcn UI components | copied source under `frontend/src/components/ui/` |
 | All npm packages | `npm ci` against `package-lock.json` at build time |
 | All pip packages | `pip install -r requirements.txt` at build time |
-| ffmpeg | installed via `apt-get install ffmpeg` at build time |
-| Base images | `node:20-alpine`, `nginx:alpine`, `python:3.12-slim` are cached locally after the first pull |
+| ffmpeg binary | `apt-get install ffmpeg` during backend build |
+| Swagger UI | local copy at `backend/app/static/` (no CDN) |
+| Base images | `node:20-alpine`, `nginx:alpine`, `python:3.12-slim` cached locally after first pull |
 
-To verify the host can rebuild offline:
+Verify offline rebuild:
 
 ```bash
 docker compose down
-sudo ip link set <iface> down       # or just unplug
-docker compose up --build -d        # should succeed using only cached layers
+# disconnect / pull the ethernet / turn wifi off
+docker compose up --build -d        # must succeed using cached layers
 ```
 
 ---
 
 ## Quick start — Windows native
 
-If Docker isn't available on the target machine, the whole stack can run
-directly on Windows as three local processes (uvicorn, `next start`, and a
-bundled nginx).
-
-### Prerequisites
-
-- Python 3.12+ on PATH
-- Node.js 20 LTS on PATH
-- FFmpeg — `setup.bat` will auto-install it via `winget` if missing
+If Docker isn't available on the target machine, the stack runs directly
+as three console processes: uvicorn, `next start`, and a bundled nginx.
 
 ### First-time setup
 
-Double-click or run from `cmd`:
+Double-click or from `cmd`:
 
 ```cmd
 setup.bat
 ```
 
-This pulls the latest code (if the directory is a git clone), downloads
-nginx 1.26.2 into `nginx-bin\`, creates a Python venv under
-`backend\.venv\`, installs backend + frontend dependencies, and builds the
-Next.js standalone output. It's re-runnable — just run it again to update
-after `git pull`.
+The script pulls latest code (if it's a git clone), downloads
+nginx 1.26.2 into `nginx-bin\`, creates `backend\.venv\`, installs all
+backend + frontend dependencies, and produces the Next.js standalone
+build. Re-run it to update after a `git pull`.
+
+If ffmpeg isn't on `PATH`, `setup.bat` auto-installs it via `winget`.
 
 ### Start / stop
 
 ```cmd
 run.bat          # spawns backend, frontend, and nginx in separate windows
-stop.bat         # kills all three by port
+stop.bat         # kills all three by port (8080, 3000, 8082)
 ```
 
-The app is reachable at `http://localhost:8082` and on the LAN at
-`http://<host-ip>:8082`. Windows Firewall must allow inbound TCP 8082 for
-LAN access.
+Windows Firewall must allow inbound **TCP 8082** for LAN devices to
+reach the app.
 
 ---
 
 ## Common operations
 
-### Restart everything
-
-```bash
-docker compose restart
-```
-
-### Rebuild after changing source code
+### Rebuild after a code change (Docker)
 
 ```bash
 docker compose up --build -d
 ```
 
-### Tail the logs
+### Health check
 
 ```bash
-docker compose logs -f               # all services
-docker compose logs -f backend       # just one
+curl http://localhost:8082/api/health      # → {"status":"ok"}
 ```
 
-### Check health
-
-```bash
-curl http://localhost:8082/api/health
-```
-
-### Inspect the database
-
-The SQLite file lives in the named volume `warehouse-db`. To poke at it:
+### Inspect the SQLite database
 
 ```bash
 docker compose exec backend python -c "import sqlite3; \
@@ -164,16 +117,14 @@ docker compose exec backend python -c "import sqlite3; \
   print(list(c.execute('SELECT id, username, role, is_approved FROM users')))"
 ```
 
-### Back up the data
+### Back up all persistent state
 
-Two Docker volumes hold all persistent state:
+Two named Docker volumes hold everything:
 
-| Volume | Contains |
+| Volume | Contents |
 |---|---|
 | `warehouse-db` | the SQLite file |
 | `uploads` | every uploaded image and video |
-
-To dump them to a tarball:
 
 ```bash
 docker run --rm \
@@ -183,144 +134,192 @@ docker run --rm \
   alpine tar czf /backup/warehouse-backup-$(date +%Y%m%d).tar.gz /db /uploads
 ```
 
-To restore: `docker run --rm -v ... -v ...:/backup alpine tar xzf /backup/<file>.tar.gz -C /`
+Restore: `docker run --rm -v ...:/db -v ...:/uploads -v "$PWD":/backup alpine tar xzf /backup/<file>.tar.gz -C /`
+
+---
+
+## Architecture
+
+```
+                        ┌─────────────────────────────┐
+                        │           nginx             │
+                        │  :8082 (only open port)     │
+                        └──────────────┬──────────────┘
+                                       │
+              /_next/* & /fonts/*      │         /api/*
+              ───────────────────┐     │     ┌─────────────
+                                 ▼     ▼     ▼
+                     ┌─────────────────┐   ┌────────────────┐
+                     │  Next.js (3000) │   │ FastAPI (8080) │
+                     │   standalone    │   │    uvicorn     │
+                     └─────────────────┘   └────────┬───────┘
+                                                    │
+                                   ┌────────────────┴──────────┐
+                                   ▼                           ▼
+                           ┌──────────────┐          ┌──────────────┐
+                           │  warehouse-  │          │   uploads/   │
+                           │   db volume  │          │    volume    │
+                           │   (sqlite)   │          │    (media)   │
+                           └──────────────┘          └──────────────┘
+```
+
+- Nginx terminates HTTP, gzips text payloads, caches `_next/static` and
+  `/fonts/` for a year, and proxies `/api/*` to FastAPI.
+- The frontend talks to the backend under the same origin at `/api`,
+  so there are **no CORS surprises** in production.
+- Uploads are chunked (10 MB per request, up to 3 parallel), resumable,
+  and reassembled server-side; ffmpeg remuxes web-ready H.264 / ≤720p /
+  ≤30 fps input (fast) or transcodes anything else.
+- Video **compression runs on the client** when the source exceeds the
+  remux window (>720p or >30 fps), so the server only stream-copies.
+
+---
+
+## Roles & access
+
+| Role | Can | Cannot |
+|---|---|---|
+| Admin | Everything — create / edit / delete bundles, approve / reject / remove users, change roles, bulk delete | — |
+| Content Creators | Create new bundles, edit items & media, copy bundle details | Delete a whole bundle, manage users |
+| Listing Executives | View bundles, download media, copy details | Create or modify bundles |
+
+The **first registered user** is auto-approved as Admin. Subsequent
+users land in *pending* until an admin approves them.
+
+### Password reset
+
+Users can self-reset from the **Forgot password?** link on the login
+page. After a reset the account is moved back to *pending* and has to
+be re-approved in person by an admin — that's the security model.
+
+The Admin account's password is locked at the backend. `/users/reset-password`
+returns 403 for any user whose role is `Admin`.
+
+---
+
+## Download behaviour per device
+
+The app is used mostly from phones. Downloads are routed through the
+platform's native capabilities so files actually land where users
+expect:
+
+| Device | Path | File lands in |
+|---|---|---|
+| **iOS** (Safari, Chrome, Firefox — all WebKit) | Pre-fetches the blobs → dialog with **Save** buttons → `navigator.share({ files })` under a real user tap | Photos (via iOS share sheet) |
+| **Android** (Chrome / Samsung / Firefox) | Direct URL with `Content-Disposition: attachment` → browser's DownloadManager | `/Download/` → indexed by MediaStore → shows up in Gallery / Google Photos |
+| **Desktop** (any) | Same direct URL path | User's Downloads folder |
+
+Android and desktop don't buffer bytes in page memory — the browser's
+native download UI handles streaming and notifications. iOS is the
+only platform that has to hold the blob in RAM because that's the only
+way `navigator.share` reaches Photos on iOS.
 
 ---
 
 ## Editing the clipboard template
 
-The format used by the **Copy** button on bundles lives in a single JSON file
-that is **bind-mounted** into the backend container, so edits take effect on
-the next click — no rebuild, no restart.
+The format used by the **Copy** button on bundles lives in a single JSON
+file that is **bind-mounted** into the backend container, so edits take
+effect on the next click — no rebuild, no restart.
 
 ```bash
 nano backend/app/templates/clipboard.json
 ```
 
-The file documents its own placeholders inline. Available tokens:
+Available placeholders (documented inline in the file):
 
 - **Header / footer**: `{bundle_code}`, `{bundle_name}`, `{status}`,
-  `{created_at}`, `{item_count}`, `{image_count}`
-- **Item**: `{n}`, `{gender}`, `{brand}`, `{article}`, `{number_of_pieces}`,
-  `{gift_pcs}`, `{grade}`, `{size_variation}`, `{comments}`
-
----
-
-## Roles
-
-| Role | Can | Cannot |
-|---|---|---|
-| Admin | Everything (create / edit / delete bundles, approve users, change roles) | — |
-| Content Creators | Create new bundles, edit existing bundles (items + media), copy details | Delete a whole bundle, manage users |
-| Listing Executives | View bundles, download media, copy details | Create or modify bundles |
-
-The very first user who registers becomes Admin and is auto-approved.
-Subsequent users land in **pending** until an admin approves them.
-
-### Password reset
-
-Users can self-reset their password from the **Forgot password?** link on
-the login page. After a reset they go back to **pending** and have to be
-re-approved by an admin in person — that's the security model.
-
-The **admin** account's password is locked at the backend and can never be
-reset (`/users/reset-password` returns 403 for any user with role `Admin`).
+  `{created_at}`, `{item_count}`, `{total_pieces}`, `{image_count}`
+- **Per-item**: `{n}`, `{gender}`, `{brand}`, `{article}`,
+  `{number_of_pieces}`, `{gift_pcs}`, `{grade}`, `{size_variation}`,
+  `{comments}`
 
 ---
 
 ## Troubleshooting
 
-### Port 8082 is taken
+### Port 8082 is already in use
 
-The cleanest workaround is a local **Compose override file** that Compose
-merges on top of `docker-compose.yml`. Create `compose.port-override.yml`
-in the project root:
+Drop a local **Compose override** in the project root — the `!override`
+tag replaces the base `ports` list instead of appending:
 
 ```yaml
+# compose.port-override.yml
 services:
   nginx:
     ports: !override
-      - "8085:80"      # or whatever free port you want
+      - "8085:80"      # or any free port
 ```
 
-The `!override` tag replaces the base `ports` list instead of appending
-to it. Bring the stack up with both files:
+Bring the stack up with both files:
 
 ```bash
 docker compose -f docker-compose.yml -f compose.port-override.yml up -d
 ```
 
-This file is gitignored on purpose — it's a local, per-host setting, not
-something to commit.
+This file is gitignored (per-host setting, not something to commit).
 
-Or, if you'd rather not bother with an override, just edit
-`docker-compose.yml` directly:
+On the Windows native path, edit `listen 8082;` in
+`nginx/windows.conf` instead, and re-run `run.bat`.
 
-```yaml
-nginx:
-  ports:
-    - "9000:80"      # whatever you like
+### Very large uploads feel slow
+
+Uploads are chunked at 10 MB, up to 3 in flight. Two things to check:
+
+1. Is the video outside the backend remux window (>720p or >30 fps)?
+   The client should be compressing it first — watch the browser
+   console for `[video-compressor] …` logs.
+2. `client_max_body_size` in `nginx/default.conf` is **per chunk**
+   (20 MB headroom over the 10 MB chunk). Don't touch it unless you
+   change the chunk size in `frontend/src/lib/chunked-upload.ts`.
+
+Tail backend logs during an upload:
+
+```bash
+docker compose logs -f backend nginx
 ```
-
-Then `docker compose up -d` to recreate the nginx container.
-
-On the Windows native path, edit the `listen 8082;` line in
-`nginx/windows.conf` instead.
-
-### Big videos won't upload
-
-Uploads are chunked at 10 MB per request. If your videos are huge and
-slow:
-
-1. Check `nginx/default.conf` `client_max_body_size 20M;` (per chunk, not
-   per file — leave it alone unless you change the chunk size)
-2. Check `Dockerfile` uvicorn timeout flags
-3. Look at `docker compose logs -f backend nginx` while uploading
 
 ### "Admin password cannot be reset"
 
-That's by design. Re-read the **Roles → Password reset** section.
+By design. Re-read the **Password reset** section above.
 
-### Stack won't start after rebooting the host
+### Stack won't start after a reboot
 
-Containers are configured with `restart: unless-stopped`, so they should
-come up automatically on reboot. If they don't:
+Containers are `restart: unless-stopped` and should come up
+automatically. If they don't:
 
 ```bash
 docker compose up -d
 ```
 
+### No media downloads on my phone
+
+Verify the browser actually supports the native download route:
+
+- Android Chrome/Samsung — should trigger a DownloadManager notification
+  at the top. If nothing happens, check in `chrome://downloads`.
+- iOS Safari — you must tap the **Save** button inside the app's
+  download dialog; the share sheet is OS-level.
+
 ---
 
-## Architecture at a glance
+## Data surfaces
 
-```
-                ┌────────────────────────────────────┐
-                │              nginx                 │
-                │  :8082 (the only published port)   │
-                └────────────────┬───────────────────┘
-                                 │
-                ┌────────────────┴────────────────┐
-                │                                 │
-                ▼                                 ▼
-       ┌─────────────────┐               ┌────────────────┐
-       │  Next.js (3000) │               │ FastAPI (8080) │
-       │ standalone node │               │    + uvicorn   │
-       └─────────────────┘               └────────┬───────┘
-                                                  │
-                                  ┌───────────────┴───────────────┐
-                                  │                               │
-                                  ▼                               ▼
-                          ┌──────────────┐               ┌─────────────┐
-                          │  warehouse-  │               │   uploads/  │
-                          │   db volume  │               │   volume    │
-                          │  (sqlite)    │               │  (media)    │
-                          └──────────────┘               └─────────────┘
-```
+| Where | What |
+|---|---|
+| SQLite `data/warehouse.db` | users, bundles, items, image rows, upload-job tracking |
+| `uploads/{bundle_code}/` | every uploaded image (`bundle-X_img_N.jpg`) and processed video (`bundle-X_vid_N.mp4`) |
+| `backend/app/templates/clipboard.json` | user-editable clipboard format (bind-mounted, hot-reload) |
+| Docker volumes `warehouse-db`, `uploads` | persistent state; back these up |
 
-- nginx terminates HTTP, gzips text payloads, caches `_next/static` and
-  `/fonts/` for a year, and proxies API calls under `/api/` to FastAPI.
-- The Next.js app talks to FastAPI through the same `/api/` path so there
-  are no CORS issues and one address works from any device on the LAN.
-- Video compression happens **on the client device** in the browser before
-  the file is uploaded — the server just stores bytes.
+---
+
+## Key files for future readers
+
+- [backend/app/main.py](backend/app/main.py) — FastAPI entry, router wiring, CORS, inline index migration
+- [backend/app/routers/bundles.py](backend/app/routers/bundles.py) — CRUD + chunked-upload lifecycle (`init` → `chunk` → `finalize` → `status`)
+- [backend/app/utils/media_processor.py](backend/app/utils/media_processor.py) — probe → remux (stream-copy) or transcode
+- [frontend/src/lib/download.ts](frontend/src/lib/download.ts) — device-aware download module
+- [frontend/src/lib/video-compressor.ts](frontend/src/lib/video-compressor.ts) — WebCodecs / MediaRecorder client-side compression
+- [frontend/src/components/bundle-card.tsx](frontend/src/components/bundle-card.tsx) — the list card (thumbnail + metadata + action footer)
+- [nginx/default.conf](nginx/default.conf) — proxy, caching, gzip, byte-range passthrough

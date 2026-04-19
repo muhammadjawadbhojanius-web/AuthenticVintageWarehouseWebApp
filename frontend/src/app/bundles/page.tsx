@@ -8,6 +8,7 @@ import { AppHeader } from "@/components/app-header";
 import { BundleCard } from "@/components/bundle-card";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { BundleListSkeleton } from "@/components/skeletons";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -232,7 +233,10 @@ export default function BundlesPage() {
     }
   };
 
-  const bundles = bundlesQuery.data ?? [];
+  // Defensive: the query layer already rejects non-array responses, but
+  // in case something slips through (persisted cache, mid-rollout build)
+  // we still want .map to be safe.
+  const bundles = Array.isArray(bundlesQuery.data) ? bundlesQuery.data : [];
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -304,11 +308,7 @@ export default function BundlesPage() {
           </Button>
         </div>
 
-        {bundlesQuery.isLoading && (
-          <div className="flex justify-center py-12">
-            <Spinner />
-          </div>
-        )}
+        {bundlesQuery.isLoading && <BundleListSkeleton count={6} />}
         {bundlesQuery.isError && (
           <Card className="mx-auto max-w-md p-6 text-center">
             <p className="font-semibold">Could not load bundles.</p>

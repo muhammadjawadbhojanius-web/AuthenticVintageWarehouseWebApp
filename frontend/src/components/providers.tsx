@@ -7,6 +7,7 @@ import { SettingsProvider } from "@/contexts/settings-context";
 import { UploadQueueProvider } from "@/contexts/upload-queue-context";
 import { ToastProvider } from "@/components/toaster";
 import { UploadQueueIndicator } from "@/components/upload-queue-indicator";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = React.useState(
@@ -22,17 +23,19 @@ export function Providers({ children }: { children: React.ReactNode }) {
       })
   );
   return (
-    <QueryClientProvider client={queryClient}>
-      <SettingsProvider>
-        <AuthProvider>
-          <UploadQueueProvider>
-            <ToastProvider>
-              {children}
-              <UploadQueueIndicator />
-            </ToastProvider>
-          </UploadQueueProvider>
-        </AuthProvider>
-      </SettingsProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <SettingsProvider>
+          <AuthProvider>
+            <UploadQueueProvider>
+              <ToastProvider>
+                {children}
+                <UploadQueueIndicator />
+              </ToastProvider>
+            </UploadQueueProvider>
+          </AuthProvider>
+        </SettingsProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
