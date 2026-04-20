@@ -30,7 +30,7 @@ import {
 } from "@/lib/queries";
 import type { User } from "@/lib/types";
 
-const ROLES = ["Admin", "Content Creators", "Listing Executives"];
+const ROLES = ["Admin", "Content Creators", "Listing Executives", "Developer"];
 
 export default function AdminUsersPage() {
   const { ready } = useAuthGuard({ requireRole: "Admin" });

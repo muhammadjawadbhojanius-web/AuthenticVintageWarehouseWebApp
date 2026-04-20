@@ -1,4 +1,4 @@
-export type Role = "Admin" | "Content Creators" | "Listing Executives" | string;
+export type Role = "Admin" | "Content Creators" | "Listing Executives" | "Developer" | string;
 
 export interface User {
   id: number;

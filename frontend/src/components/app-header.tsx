@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { LogOut, Settings as SettingsIcon, ShieldCheck } from "lucide-react";
+import { LogOut, Settings as SettingsIcon, ShieldCheck, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
 import { useConnectivity } from "@/hooks/use-connectivity";
@@ -16,7 +16,7 @@ interface AppHeaderProps {
 
 export function AppHeader({ showAdmin = false, showLogout = true }: AppHeaderProps) {
   const router = useRouter();
-  const { username, role, logout } = useAuth();
+  const { username, role, isDeveloper, roleOverride, logout } = useAuth();
   const isAdmin = role === "Admin";
   const connected = useConnectivity();
 
@@ -48,6 +48,29 @@ export function AppHeader({ showAdmin = false, showLogout = true }: AppHeaderPro
             onClick={() => router.push("/admin")}
           >
             <ShieldCheck className="h-5 w-5" />
+          </Button>
+        )}
+        {isDeveloper && (
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Developer"
+            // Note: the Developer gate reads actualRole, so the menu stays
+            // reachable even while the Developer is impersonating another
+            // role and would otherwise lose admin affordances.
+            onClick={() => router.push("/developer")}
+            title={
+              roleOverride
+                ? `Developer (acting as ${roleOverride})`
+                : "Developer"
+            }
+          >
+            <Terminal
+              className={cn(
+                "h-5 w-5",
+                roleOverride && "text-warning",
+              )}
+            />
           </Button>
         )}
         <Button

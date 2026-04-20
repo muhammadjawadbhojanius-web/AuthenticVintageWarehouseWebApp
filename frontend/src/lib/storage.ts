@@ -6,6 +6,7 @@ const KEYS = {
   role: "role",
   baseAddress: "base_address",
   themeMode: "theme_mode",
+  roleOverride: "role_override", // Developer-only: simulate another role
 } as const;
 
 export type ThemeMode = "light" | "dark" | "system";
@@ -24,6 +25,14 @@ export const storage = {
     localStorage.removeItem(KEYS.token);
     localStorage.removeItem(KEYS.username);
     localStorage.removeItem(KEYS.role);
+    localStorage.removeItem(KEYS.roleOverride);
+  },
+
+  getRoleOverride: () =>
+    typeof window === "undefined" ? null : localStorage.getItem(KEYS.roleOverride),
+  setRoleOverride: (v: string | null) => {
+    if (v) localStorage.setItem(KEYS.roleOverride, v);
+    else localStorage.removeItem(KEYS.roleOverride);
   },
 
   getBaseAddress: () => {

@@ -304,16 +304,12 @@ async function compressWithMediaRecorder(
   const mimeType = fallbackMime();
   if (!mimeType) return file;
 
-  let audioCtx: AudioContext | null = null;
-  try {
-    audioCtx = new AudioContext();
-  } catch {
-    // Video-only fallback.
-  }
-
   const url = URL.createObjectURL(file);
   try {
     const video = document.createElement("video");
+    // Muted + no AudioContext is the whole audio-stripping story for this
+    // path. The warehouse workflow doesn't keep audio on videos, and we
+    // never want playback audible to the user during compression either.
     video.muted = true;
     video.playsInline = true;
     video.preload = "auto";
@@ -353,19 +349,9 @@ async function compressWithMediaRecorder(
     const ctx = canvas.getContext("2d")!;
 
     const canvasStream = (canvas as HTMLCanvasElement & { captureStream(fps: number): MediaStream }).captureStream(TARGET_FRAME_RATE);
+    // Video-only stream — no audio tracks are ever added, so MediaRecorder
+    // has nothing to encode on the audio side.
     const tracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
-
-    if (audioCtx) {
-      try {
-        const source = audioCtx.createMediaElementSource(video);
-        const audioDest = audioCtx.createMediaStreamDestination();
-        source.connect(audioDest);
-        source.connect(audioCtx.destination);
-        for (const t of audioDest.stream.getAudioTracks()) tracks.push(t);
-      } catch {
-        // Video-only.
-      }
-    }
 
     const recorder = new MediaRecorder(new MediaStream(tracks), {
       mimeType,
@@ -393,7 +379,9 @@ async function compressWithMediaRecorder(
       recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
       recorder.onerror = (e) => reject(e);
       recorder.start(500);
-      video.muted = false;
+      // Stays muted through play() — previously this was set to false
+      // which made the source video audible to the user and would also
+      // leak audio into the MediaRecorder output on some browsers.
       video.onended = () => setTimeout(() => {
         if (recorder.state === "recording") recorder.stop();
       }, 200);
@@ -416,9 +404,6 @@ async function compressWithMediaRecorder(
     return new File([compressed], `${baseName}.${ext}`, { type: mimeType });
   } finally {
     URL.revokeObjectURL(url);
-    if (audioCtx && audioCtx.state !== "closed") {
-      audioCtx.close().catch(() => {});
-    }
   }
 }
 
