@@ -21,6 +21,10 @@ class Bundle(Base):
     bundle_code = Column(String, unique=True)
     bundle_name = Column(String, nullable=True)
     status = Column(String, default="pending")
+    # 0 = draft (default), 1 = posted. Togglable by Admins and Listing
+    # Executives from the bundle card. An idempotent ALTER TABLE in
+    # main.py adds this column to pre-existing databases.
+    posted = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
 
     items = relationship("BundleItem", back_populates="bundle")

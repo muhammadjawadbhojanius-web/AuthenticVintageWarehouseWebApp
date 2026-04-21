@@ -36,6 +36,11 @@ with database.engine.connect() as _conn:
     from sqlalchemy import text as _text
     _conn.execute(_text("CREATE INDEX IF NOT EXISTS ix_bundle_items_bundle_id ON bundle_items(bundle_id)"))
     _conn.execute(_text("CREATE INDEX IF NOT EXISTS ix_bundle_images_bundle_id ON bundle_images(bundle_id)"))
+    # Idempotent add of the `posted` column on pre-existing databases.
+    # SQLite has no "ADD COLUMN IF NOT EXISTS", so we check PRAGMA first.
+    _cols = {row[1] for row in _conn.execute(_text("PRAGMA table_info(bundles)")).fetchall()}
+    if "posted" not in _cols:
+        _conn.execute(_text("ALTER TABLE bundles ADD COLUMN posted INTEGER NOT NULL DEFAULT 0"))
     _conn.commit()
 
 # Create uploads directory if it doesn't exist

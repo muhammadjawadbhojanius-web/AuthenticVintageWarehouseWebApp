@@ -61,6 +61,19 @@ def change_bundle_status(
     return bundle
 
 
+# ---------- UPDATE POSTED (draft ↔ posted toggle) ----------
+@router.patch("/{bundle_code}/posted", response_model=schemas.BundleOut)
+def change_bundle_posted(
+    bundle_code: str,
+    payload: schemas.BundlePostedUpdate,
+    db: Session = Depends(get_db),
+):
+    bundle = crud.update_bundle_posted(db, bundle_code, payload.posted)
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Bundle not found")
+    return bundle
+
+
 # ---------- ADD ITEM ----------
 @router.post("/{bundle_code}/items", response_model=schemas.BundleItemOut)
 def add_item(bundle_code: str, item: schemas.BundleItemCreate, db: Session = Depends(get_db)):

@@ -37,6 +37,10 @@ export async function updateBundleStatus(bundleCode: string, status: string) {
   await api().patch(`/bundles/${encodeURIComponent(bundleCode)}/status`, { status });
 }
 
+export async function updateBundlePosted(bundleCode: string, posted: boolean) {
+  await api().patch(`/bundles/${encodeURIComponent(bundleCode)}/posted`, { posted });
+}
+
 export async function updateBundle(
   oldCode: string,
   update: { bundle_code?: string; bundle_name?: string },

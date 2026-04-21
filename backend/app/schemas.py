@@ -41,6 +41,10 @@ class BundleCreate(BaseModel):
 class BundleStatusUpdate(BaseModel):
     status: str
 
+
+class BundlePostedUpdate(BaseModel):
+    posted: bool
+
 class BundleImageOut(BaseModel):
     id: int
     image_path: str
@@ -55,6 +59,7 @@ class BundleOut(BaseModel):
     bundle_code: str
     bundle_name: Optional[str] = None
     status: str
+    posted: int = 0
     created_at: datetime
     items: List['BundleItemOut'] = []
     images: List[BundleImageOut] = []

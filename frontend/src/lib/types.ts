@@ -29,6 +29,8 @@ export interface Bundle {
   bundle_code: string;
   bundle_name?: string | null;
   status: string;
+  /** 0 = draft, 1 = posted. Togglable by Admin and Listing Executives. */
+  posted: number;
   created_at: string;
   items: BundleItem[];
   images: BundleImage[];

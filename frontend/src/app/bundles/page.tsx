@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { Plus, X, Inbox, RefreshCw, Video, Download, Search, Trash2, Share, CheckCircle2 } from "lucide-react";
+import { Plus, X, Inbox, RefreshCw, Video, Download, Search, Trash2, Share, CheckCircle2, ThumbsUp, ThumbsDown } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { BundleCard } from "@/components/bundle-card";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { useAuthGuard } from "@/hooks/use-auth-guard";
 import { useAuth } from "@/contexts/auth-context";
 import { useUploadQueue } from "@/contexts/upload-queue-context";
 import { useToast } from "@/components/toaster";
-import { fetchBundles, deleteBundle as apiDeleteBundle } from "@/lib/queries";
+import { fetchBundles, deleteBundle as apiDeleteBundle, updateBundlePosted } from "@/lib/queries";
 import { fetchClipboardTemplate, copyBundleToClipboard } from "@/lib/clipboard-template";
 import { isVideoFilename, mediaUrlFor } from "@/lib/media";
 import { detectDevice, nativeDownload, shareFile } from "@/lib/download";
@@ -28,7 +28,7 @@ export default function BundlesPage() {
   const { ready } = useAuthGuard();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { role } = useAuth();
+  const { role, isDeveloper } = useAuth();
   const { toast } = useToast();
 
   const [selectionMode, setSelectionMode] = useState(false);
@@ -48,6 +48,13 @@ export default function BundlesPage() {
   const prefetchAbortRef = useRef<AbortController | null>(null);
   const [deleteFor, setDeleteFor] = useState<string | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  // Posted → Draft confirmation. Going the other direction is unprompted.
+  const [unpostFor, setUnpostFor] = useState<Bundle | null>(null);
+  // Bulk posted-toggle confirmation (only fires for Mark as Draft; bulk
+  // Mark as Posted is unprompted).
+  const [bulkUnpostOpen, setBulkUnpostOpen] = useState(false);
+  const bulkUnpostingRef = useRef(false);
+  const bulkPostingRef = useRef(false);
   const uploadQueue = useUploadQueue();
   const device = useMemo(() => detectDevice(), []);
   const isIOS = device === "ios";
@@ -74,7 +81,14 @@ export default function BundlesPage() {
   }, [search]);
 
   const isAdmin = role === "Admin";
-  const canDownload = isAdmin || role === "Listing Executives";
+  const isListingExec = role === "Listing Executives";
+  const canDownload = isAdmin || isListingExec;
+  // Feature flag: Posted / Draft is a developer-only feature for now.
+  // Gated on the real JWT role (isDeveloper), not the effective role —
+  // that way a Developer still sees / uses it while impersonating any
+  // other role to test. To open this to Admin + Listing Executives
+  // later, switch this line to `isAdmin || isListingExec`.
+  const canManagePosting = isDeveloper;
 
   const bundlesQuery = useQuery({
     queryKey: ["bundles", debouncedSearch],
@@ -93,6 +107,21 @@ export default function BundlesPage() {
     },
   });
 
+  const postedMutation = useMutation({
+    mutationFn: (v: { code: string; posted: boolean }) =>
+      updateBundlePosted(v.code, v.posted),
+    onSuccess: (_, v) => {
+      toast({
+        title: v.posted ? `${v.code} marked posted` : `${v.code} back to draft`,
+        variant: "success",
+      });
+      queryClient.invalidateQueries({ queryKey: ["bundles"] });
+    },
+    onError: () => {
+      toast({ title: "Failed to update posting state", variant: "error" });
+    },
+  });
+
   const templateQuery = useQuery({
     queryKey: ["clipboard-template"],
     queryFn: fetchClipboardTemplate,
@@ -106,6 +135,19 @@ export default function BundlesPage() {
       </div>
     );
   }
+
+  /**
+   * Per-card posted pill click. Draft → Posted fires immediately;
+   * Posted → Draft opens a confirm dialog (guarded in case someone taps
+   * the pill by mistake on a bundle that's already live).
+   */
+  const handleTogglePosted = (bundle: Bundle) => {
+    if (bundle.posted) {
+      setUnpostFor(bundle);
+      return;
+    }
+    postedMutation.mutate({ code: bundle.bundle_code, posted: true });
+  };
 
   const toggleSelected = (code: string, next: boolean) => {
     setSelected((prev) => {
@@ -242,12 +284,11 @@ export default function BundlesPage() {
     <div className="flex min-h-screen flex-col">
       <AppHeader showAdmin />
 
-      {/* Selection-mode action bar — admin-only, bulk delete is the only
-          bulk action. There is no bulk download path (individual downloads
-          only) so selection mode is gated off for non-admin roles at the
-          card's onLongPress. */}
-      {selectionMode && isAdmin && (
-        <div className="flex items-center justify-between border-b bg-muted/30 px-4 py-2">
+      {/* Selection-mode action bar. Shown when the user has ≥1 bulk
+          action available: Admin → Delete; Developer → Post / Draft
+          (+ Delete when acting as Admin). */}
+      {selectionMode && (isAdmin || canManagePosting) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-4 py-2">
           <div className="flex items-center gap-2">
             <Button
               variant="ghost"
@@ -264,16 +305,73 @@ export default function BundlesPage() {
               {selected.size} selected
             </span>
           </div>
-          <Button
-            variant="destructive"
-            size="sm"
-            disabled={selected.size === 0}
-            onClick={() => setBulkDeleteOpen(true)}
-            aria-label="Delete selected bundles"
-          >
-            <Trash2 className="h-4 w-4" />
-            Delete
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {canManagePosting && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={selected.size === 0 || postedMutation.isPending}
+                  onClick={async () => {
+                    // Bulk Mark Posted fires without a confirm — moving to
+                    // posted is the safe direction.
+                    if (bulkPostingRef.current) return;
+                    bulkPostingRef.current = true;
+                    const codes = Array.from(selected);
+                    setSelectionMode(false);
+                    setSelected(new Set());
+                    try {
+                      const results = await Promise.allSettled(
+                        codes.map((c) => updateBundlePosted(c, true)),
+                      );
+                      const failed = results.filter((r) => r.status === "rejected").length;
+                      queryClient.invalidateQueries({ queryKey: ["bundles"] });
+                      if (failed === 0) {
+                        toast({
+                          title: `Marked ${codes.length} posted`,
+                          variant: "success",
+                        });
+                      } else {
+                        toast({
+                          title: `Marked ${codes.length - failed} of ${codes.length} posted`,
+                          description: `${failed} failed`,
+                          variant: "warning",
+                        });
+                      }
+                    } finally {
+                      bulkPostingRef.current = false;
+                    }
+                  }}
+                  aria-label="Mark selected posted"
+                >
+                  <ThumbsUp className="h-4 w-4" />
+                  Post
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={selected.size === 0}
+                  onClick={() => setBulkUnpostOpen(true)}
+                  aria-label="Mark selected as draft"
+                >
+                  <ThumbsDown className="h-4 w-4" />
+                  Draft
+                </Button>
+              </>
+            )}
+            {isAdmin && (
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={selected.size === 0}
+                onClick={() => setBulkDeleteOpen(true)}
+                aria-label="Delete selected bundles"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+            )}
+          </div>
         </div>
       )}
 
@@ -349,7 +447,11 @@ export default function BundlesPage() {
                   isUploading={uploadingCodes.has(code)}
                   preparingDownload={preparingCode === code}
                   onLongPress={
-                    isAdmin
+                    // Anyone with at least one available bulk action can
+                    // enter selection mode: Admin → bulk delete;
+                    // Developer → bulk post / draft (and bulk delete when
+                    // they're acting as Admin).
+                    isAdmin || canManagePosting
                       ? () => {
                           setSelectionMode(true);
                           setSelected(new Set([code]));
@@ -361,6 +463,8 @@ export default function BundlesPage() {
                   onDownload={() => handleOpenDownload(b)}
                   onDelete={() => setDeleteFor(code)}
                   onCopy={() => handleCopy(b)}
+                  canManagePosting={canManagePosting}
+                  onTogglePosted={() => handleTogglePosted(b)}
                 />
               );
             })}
@@ -559,6 +663,98 @@ export default function BundlesPage() {
               }}
             >
               Delete {selected.size}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Single posted → draft confirm. Only fires when going backwards;
+          draft → posted is unprompted. */}
+      <Dialog
+        open={!!unpostFor}
+        onOpenChange={(v) => !v && setUnpostFor(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Mark as draft?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            <strong>{unpostFor?.bundle_code}</strong> is currently posted. Are you
+            sure you want to revert it to draft?
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUnpostFor(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (unpostFor) {
+                  postedMutation.mutate({
+                    code: unpostFor.bundle_code,
+                    posted: false,
+                  });
+                }
+                setUnpostFor(null);
+              }}
+            >
+              <ThumbsDown className="h-4 w-4" />
+              Mark as draft
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk posted → draft confirm. Symmetric to the bulk-delete dialog —
+          double-fire-guarded and clears selection on success. */}
+      <Dialog open={bulkUnpostOpen} onOpenChange={setBulkUnpostOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Mark {selected.size} bundle{selected.size === 1 ? "" : "s"} as draft?
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Any of these that are currently posted will revert to draft. Bundles
+            already in draft stay unchanged.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkUnpostOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={bulkUnpostingRef.current}
+              onClick={async () => {
+                if (bulkUnpostingRef.current) return;
+                bulkUnpostingRef.current = true;
+                const codes = Array.from(selected);
+                setBulkUnpostOpen(false);
+                setSelectionMode(false);
+                setSelected(new Set());
+                try {
+                  const results = await Promise.allSettled(
+                    codes.map((c) => updateBundlePosted(c, false)),
+                  );
+                  const failed = results.filter((r) => r.status === "rejected").length;
+                  queryClient.invalidateQueries({ queryKey: ["bundles"] });
+                  if (failed === 0) {
+                    toast({
+                      title: `Reverted ${codes.length} to draft`,
+                      variant: "success",
+                    });
+                  } else {
+                    toast({
+                      title: `Reverted ${codes.length - failed} of ${codes.length}`,
+                      description: `${failed} failed`,
+                      variant: "warning",
+                    });
+                  }
+                } finally {
+                  bulkUnpostingRef.current = false;
+                }
+              }}
+            >
+              <ThumbsDown className="h-4 w-4" />
+              Mark as draft
             </Button>
           </DialogFooter>
         </DialogContent>

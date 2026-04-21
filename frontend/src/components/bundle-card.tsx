@@ -1,12 +1,22 @@
 "use client";
 
 import { memo, useMemo, useRef } from "react";
-import { Package, Trash2, Download, ClipboardCopy, Loader2, Layers } from "lucide-react";
+import {
+  Package,
+  Trash2,
+  Download,
+  ClipboardCopy,
+  Loader2,
+  Layers,
+  ThumbsUp,
+  ThumbsDown,
+} from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { countMedia } from "@/lib/media-status";
 import { isVideoFilename, mediaUrlFor } from "@/lib/media";
+import { useInView } from "@/hooks/use-in-view";
 import type { Bundle } from "@/lib/types";
 
 export interface BundleCardProps {
@@ -23,8 +33,16 @@ export interface BundleCardProps {
   onDownload?: () => void;
   onDelete?: () => void;
   onCopy?: () => void;
+  /**
+   * Tap on the Posted / Draft pill. Current state is derived from
+   * `bundle.posted`. The page decides when to confirm (posted → draft
+   * shows a prompt; draft → posted fires instantly).
+   */
+  onTogglePosted?: () => void;
   canDownload?: boolean;
   canDelete?: boolean;
+  /** Admin + Listing Executives. Renders the Posted/Draft pill. */
+  canManagePosting?: boolean;
 }
 
 function formatDate(s?: string): string {
@@ -86,21 +104,41 @@ function Thumbnail({
     return { imageSrc: img, videoSrc: vid };
   }, [bundle.images]);
 
+  // Defer actual media requests until the card is within ~400 px of the
+  // viewport. For a long bundle list this turns the startup cost from
+  // "one GET per card in the list" into "one GET per card the user
+  // actually sees (plus a small read-ahead)". Once a thumb has loaded it
+  // stays mounted — `once: true` means we don't tear it down on scroll
+  // back up.
+  const { ref: thumbRef, inView } = useInView<HTMLDivElement>({
+    rootMargin: "400px 0px",
+    once: true,
+  });
+
   return (
-    <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-lg bg-muted">
-      {imageSrc ? (
+    <div
+      ref={thumbRef}
+      className="relative h-24 w-24 shrink-0 overflow-hidden rounded-lg bg-muted"
+    >
+      {inView && imageSrc ? (
         // Plain <img> — the backend serves same-origin under /api/media
         // with Range-request support, which Safari/iOS require.
+        // `loading="lazy"` is a belt-and-braces hint for the browser's
+        // own deferred-fetch heuristic on top of our own intersection
+        // guard.
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={imageSrc}
           alt=""
           draggable={false}
+          loading="lazy"
+          decoding="async"
           className="h-full w-full object-cover"
         />
-      ) : videoSrc ? (
+      ) : inView && videoSrc ? (
         // Metadata-only preload makes iOS render the first frame as a
         // static poster. `#t=0.1` skips the common black opening frame.
+        // <video loading="lazy"> is not a thing, hence the manual gate.
         <video
           src={`${videoSrc}#t=0.1`}
           preload="metadata"
@@ -108,11 +146,11 @@ function Thumbnail({
           playsInline
           className="h-full w-full object-cover"
         />
-      ) : (
+      ) : !imageSrc && !videoSrc ? (
         <div className="flex h-full w-full items-center justify-center">
           <Package className="h-8 w-8 text-muted-foreground/60" />
         </div>
-      )}
+      ) : null /* off-screen thumb — bg-muted placeholder holds space */}
 
       {/* Upload-in-progress veil */}
       {isUploading && (
@@ -158,8 +196,10 @@ function BundleCardImpl({
   onDownload,
   onDelete,
   onCopy,
+  onTogglePosted,
   canDownload = false,
   canDelete = false,
+  canManagePosting = false,
 }: BundleCardProps) {
   // Refs (not state) so we don't trigger re-renders and so the values are
   // read synchronously by handlers that might fire between state flushes.
@@ -254,23 +294,36 @@ function BundleCardImpl({
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* Top row: code + media badge */}
+          {/* Top row: code + badges stack (media badge + posted pill) */}
           <div className="flex items-start gap-2">
             <h3 className="min-w-0 flex-1 truncate text-base font-bold tracking-tight text-foreground">
               {bundle.bundle_code}
             </h3>
-            <span
-              className={cn(
-                "shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide",
-                isUploading
-                  ? "bg-warning/15 text-warning"
-                  : hasMedia
-                    ? "bg-success/15 text-success"
-                    : "bg-muted text-muted-foreground"
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              <span
+                className={cn(
+                  "rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide",
+                  isUploading
+                    ? "bg-warning/15 text-warning"
+                    : hasMedia
+                      ? "bg-success/15 text-success"
+                      : "bg-muted text-muted-foreground"
+                )}
+              >
+                {isUploading ? "UPLOADING" : mediaBadgeLabel(photos, videos)}
+              </span>
+              {canManagePosting && !selectionMode && (
+                <PostedPill
+                  posted={!!bundle.posted}
+                  onClick={(e) => {
+                    // Prevent the card's onClick (which would navigate or
+                    // toggle selection) from firing.
+                    e.stopPropagation();
+                    onTogglePosted?.();
+                  }}
+                />
               )}
-            >
-              {isUploading ? "UPLOADING" : mediaBadgeLabel(photos, videos)}
-            </span>
+            </div>
           </div>
 
           {/* Italic quoted name */}
@@ -355,6 +408,36 @@ function BundleCardImpl({
         </div>
       )}
     </Card>
+  );
+}
+
+interface PostedPillProps {
+  posted: boolean;
+  onClick: (e: React.MouseEvent) => void;
+}
+
+/** Small clickable status pill: ThumbsUp when posted, ThumbsDown when draft. */
+function PostedPill({ posted, onClick }: PostedPillProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={posted ? "Mark bundle as draft" : "Mark bundle as posted"}
+      title={posted ? "Posted — tap to revert to draft" : "Draft — tap to mark posted"}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide transition-colors",
+        posted
+          ? "bg-success/15 text-success hover:bg-success/25"
+          : "bg-muted text-muted-foreground hover:bg-muted/80",
+      )}
+    >
+      {posted ? (
+        <ThumbsUp className="h-3 w-3" />
+      ) : (
+        <ThumbsDown className="h-3 w-3" />
+      )}
+      {posted ? "POSTED" : "DRAFT"}
+    </button>
   );
 }
 

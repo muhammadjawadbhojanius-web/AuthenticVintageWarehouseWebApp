@@ -139,6 +139,19 @@ def update_bundle_status(db: Session, bundle_code: str, new_status: str):
 
     return bundle
 
+
+def update_bundle_posted(db: Session, bundle_code: str, posted: bool):
+    bundle = get_bundle_by_code(db, bundle_code)
+
+    if not bundle:
+        return None
+
+    bundle.posted = 1 if posted else 0
+    db.commit()
+    db.refresh(bundle)
+
+    return bundle
+
 def get_user_by_id(db: Session, user_id: int):
     return db.query(models.User).filter(models.User.id == user_id).first()
 
