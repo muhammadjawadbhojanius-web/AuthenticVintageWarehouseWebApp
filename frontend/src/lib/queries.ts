@@ -199,6 +199,46 @@ export async function resetPassword(username: string, password: string) {
   await api().post(`/users/reset-password`, { username, password });
 }
 
+// ---------------------------------------------------------------------------
+// Stock report — developer-only in the UI, backend endpoint is unguarded
+// (every routes here is; auth is advisory per CLAUDE.md).
+// Bundles with posted=2 (sold) are excluded from the aggregation.
+// ---------------------------------------------------------------------------
+
+export interface StockRowBrand {
+  brand: string;
+  pieces: number;
+  gift: number;
+  total: number;
+  bundle_count: number;
+}
+export interface StockRowArticle {
+  article: string;
+  pieces: number;
+  gift: number;
+  total: number;
+  bundle_count: number;
+}
+export interface StockRowCombined {
+  brand: string;
+  article: string;
+  pieces: number;
+  gift: number;
+  total: number;
+  bundle_count: number;
+}
+export interface StockReport {
+  by_brand: StockRowBrand[];
+  by_article: StockRowArticle[];
+  combined: StockRowCombined[];
+  totals: { bundles: number; pieces: number; gift: number; total: number };
+}
+
+export async function fetchStockReport(): Promise<StockReport> {
+  const res = await api().get<StockReport>("/bundles/stock");
+  return res.data;
+}
+
 // Health
 export async function checkHealth(): Promise<boolean> {
   try {

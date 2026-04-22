@@ -223,6 +223,101 @@ def read_bundles(
     return crud.get_bundles(db, search=search, posted=posted, prefix=prefix)
 
 
+# ---------- STOCK REPORT ----------
+# Aggregates items across every non-sold bundle (posted != 2) into three
+# views: by brand, by article, and the brand × article cross-tab. Items
+# whose brand / article field contains a comma are split into separate
+# values and the sellable + gift pieces are divided equally across the
+# split values, so a brand="Nike, Adidas" / pieces=10 item contributes
+# 5 to each brand instead of 10.
+@router.get("/stock")
+def stock_report(db: Session = Depends(get_db)):
+    from collections import defaultdict
+    from sqlalchemy.orm import selectinload as _selectinload
+
+    bundles = (
+        db.query(models.Bundle)
+        .options(_selectinload(models.Bundle.items))
+        .filter(models.Bundle.posted != 2)
+        .all()
+    )
+
+    # Three aggregation buckets. Value is {"pieces": float, "gift": float,
+    # "bundles": set[str]} — bundle set is deduped at aggregation time and
+    # its size becomes the `bundle_count` column.
+    def _bucket():
+        return {"pieces": 0.0, "gift": 0.0, "bundles": set()}
+
+    by_brand: "defaultdict[str, dict]" = defaultdict(_bucket)
+    by_article: "defaultdict[str, dict]" = defaultdict(_bucket)
+    by_combo: "defaultdict[tuple[str, str], dict]" = defaultdict(_bucket)
+
+    # Grand totals computed from the raw item values so they aren't
+    # affected by rounding on the splits.
+    grand_pieces = 0
+    grand_gift = 0
+
+    for bundle in bundles:
+        for item in bundle.items:
+            pieces = int(item.number_of_pieces or 0)
+            gift = int(item.gift_pcs or 0)
+            grand_pieces += pieces
+            grand_gift += gift
+
+            brands = [b.strip() for b in (item.brand or "").split(",") if b.strip()]
+            articles = [a.strip() for a in (item.article or "").split(",") if a.strip()]
+            if not brands:
+                brands = ["(Unlabeled)"]
+            if not articles:
+                articles = ["(Unlabeled)"]
+
+            brand_pieces_share = pieces / len(brands)
+            brand_gift_share = gift / len(brands)
+            article_pieces_share = pieces / len(articles)
+            article_gift_share = gift / len(articles)
+            combo_pieces_share = pieces / (len(brands) * len(articles))
+            combo_gift_share = gift / (len(brands) * len(articles))
+
+            for b in brands:
+                by_brand[b]["pieces"] += brand_pieces_share
+                by_brand[b]["gift"] += brand_gift_share
+                by_brand[b]["bundles"].add(bundle.bundle_code)
+            for a in articles:
+                by_article[a]["pieces"] += article_pieces_share
+                by_article[a]["gift"] += article_gift_share
+                by_article[a]["bundles"].add(bundle.bundle_code)
+            for b in brands:
+                for a in articles:
+                    by_combo[(b, a)]["pieces"] += combo_pieces_share
+                    by_combo[(b, a)]["gift"] += combo_gift_share
+                    by_combo[(b, a)]["bundles"].add(bundle.bundle_code)
+
+    def _row_extra(data):
+        pieces = round(data["pieces"], 2)
+        gift = round(data["gift"], 2)
+        return {
+            "pieces": pieces,
+            "gift": gift,
+            "total": round(pieces + gift, 2),
+            "bundle_count": len(data["bundles"]),
+        }
+
+    return {
+        "by_brand": [{"brand": k, **_row_extra(v)} for k, v in by_brand.items()],
+        "by_article": [{"article": k, **_row_extra(v)} for k, v in by_article.items()],
+        "combined": [
+            {"brand": k[0], "article": k[1], **_row_extra(v)}
+            for k, v in by_combo.items()
+        ],
+        "totals": {
+            "bundles": len(bundles),
+            "pieces": grand_pieces,
+            "gift": grand_gift,
+            "total": grand_pieces + grand_gift,
+        },
+    }
+
+
 # ---------- GET SINGLE BUNDLE ----------
 @router.get("/{bundle_code}", response_model=schemas.BundleOut)
 def read_bundle(bundle_code: str, db: Session = Depends(get_db)):
