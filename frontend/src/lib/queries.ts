@@ -41,8 +41,27 @@ export function extractConflictDetail<T = unknown>(err: unknown): T | null {
 }
 
 // Bundles
-export async function fetchBundles(search?: string): Promise<Bundle[]> {
-  const url = search ? `/bundles/?search=${encodeURIComponent(search)}` : "/bundles/";
+
+export interface BundleListFilters {
+  search?: string;
+  /** 0 = draft, 1 = posted, 2 = sold. Leave undefined for "all". */
+  posted?: number;
+  /** Bundle-code prefix like "AV" or "AVG". Leave undefined for "all". */
+  prefix?: string;
+}
+
+export async function fetchBundles(
+  filters: BundleListFilters | string | undefined = undefined,
+): Promise<Bundle[]> {
+  // Preserve the old string-only signature for existing callers.
+  const f: BundleListFilters =
+    typeof filters === "string" ? { search: filters } : filters ?? {};
+  const params = new URLSearchParams();
+  if (f.search) params.append("search", f.search);
+  if (f.posted !== undefined) params.append("posted", String(f.posted));
+  if (f.prefix) params.append("prefix", f.prefix);
+  const qs = params.toString();
+  const url = qs ? `/bundles/?${qs}` : "/bundles/";
   const res = await api().get<Bundle[]>(url);
   // If the backend is misconfigured (wrong base URL pointed at an HTML
   // page, a proxy returning an error doc, etc.) axios hands us the raw

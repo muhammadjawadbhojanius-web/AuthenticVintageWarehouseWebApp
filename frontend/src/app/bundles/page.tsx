@@ -1,9 +1,11 @@
 "use client";
 
+import * as React from "react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { Plus, X, Inbox, RefreshCw, Video, Download, Search, Trash2, Share, CheckCircle2, ThumbsUp, ThumbsDown, CheckSquare } from "lucide-react";
+import { Plus, X, Inbox, RefreshCw, Video, Download, Search, Trash2, Share, CheckCircle2, ThumbsUp, ThumbsDown, CheckSquare, SlidersHorizontal } from "lucide-react";
+import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/app-header";
 import { BundleCard } from "@/components/bundle-card";
 import { Button } from "@/components/ui/button";
@@ -23,6 +25,129 @@ import { detectDevice, nativeDownload, shareFile } from "@/lib/download";
 import { prefetchBundleMedia, type PrefetchedMedia } from "@/lib/bundle-prefetch";
 import { cn } from "@/lib/utils";
 import type { Bundle, BundleImage } from "@/lib/types";
+
+// ---------------------------------------------------------------------------
+// Filter popover.
+//
+// Trigger is a compact button with an active-filter-count badge. Click
+// opens a portal-positioned panel (same positioning strategy as the
+// Status dropdown on bundle cards) with segmented button groups for
+// each filter. Matches the Settings page's appearance/theme toggle so
+// it feels native to the app.
+// ---------------------------------------------------------------------------
+
+interface FilterOption {
+  value: string | number;
+  label: string;
+}
+
+interface FilterGroup {
+  label: string;
+  options: FilterOption[];
+  value: string | number;
+  onChange: (v: string | number) => void;
+}
+
+function FilterSegmentedGroup({ label, options, value, onChange }: FilterGroup) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <div
+        className="grid gap-1.5"
+        style={{
+          gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`,
+        }}
+      >
+        {options.map((opt) => {
+          const active = opt.value === value;
+          return (
+            <button
+              key={String(opt.value)}
+              type="button"
+              onClick={() => onChange(opt.value)}
+              className={cn(
+                "rounded-md border px-2 py-2 text-xs font-medium transition-colors",
+                active
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-input hover:bg-accent",
+              )}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+interface FilterPanelProps {
+  anchorRect: DOMRect | null;
+  groups: FilterGroup[];
+  onClear: (() => void) | null;
+  onClose: () => void;
+}
+
+function FilterPanel({ anchorRect, groups, onClear, onClose }: FilterPanelProps) {
+  const ref = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  if (!anchorRect || typeof document === "undefined") return null;
+
+  // Panel roughly ~220 px tall; flip upward when there isn't room below.
+  const estimatedHeight = 220;
+  const spaceBelow = window.innerHeight - anchorRect.bottom;
+  const openUp = spaceBelow < estimatedHeight + 8;
+  const top = openUp
+    ? Math.max(8, anchorRect.top - estimatedHeight - 4)
+    : anchorRect.bottom + 4;
+  // Right-anchor so the panel doesn't overflow the right edge on phones.
+  const right = Math.max(8, window.innerWidth - anchorRect.right);
+
+  return createPortal(
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label="Filters"
+      className="fixed z-[60] w-[min(20rem,calc(100vw-1rem))] overflow-hidden rounded-lg border bg-background shadow-lg"
+      style={{ top, right }}
+    >
+      <div className="space-y-3 p-3">
+        {groups.map((g) => (
+          <FilterSegmentedGroup key={g.label} {...g} />
+        ))}
+        {onClear && (
+          <div className="flex justify-end pt-1">
+            <button
+              type="button"
+              onClick={onClear}
+              className="text-xs font-medium text-muted-foreground hover:text-foreground"
+            >
+              Clear all
+            </button>
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
 
 export default function BundlesPage() {
   const { ready } = useAuthGuard();
@@ -79,6 +204,19 @@ export default function BundlesPage() {
   const [copyingCode, setCopyingCode] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  // Filter state. Feature-flagged to developers for now; the values
+  // still flow through the query even when the filter bar is hidden
+  // so the behaviour is identical across roles.
+  type StatusFilter = "all" | 0 | 1 | 2;
+  type PrefixFilter = "all" | "AV" | "AVG";
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [prefixFilter, setPrefixFilter] = useState<PrefixFilter>("all");
+  // Popover open/close + anchor rect for portal positioning.
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterRect, setFilterRect] = useState<DOMRect | null>(null);
+  const filterBtnRef = useRef<HTMLButtonElement | null>(null);
+  const activeFilterCount =
+    (statusFilter !== "all" ? 1 : 0) + (prefixFilter !== "all" ? 1 : 0);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -99,8 +237,13 @@ export default function BundlesPage() {
   const canCreateBundle = isAdmin || isContentCreator;
 
   const bundlesQuery = useQuery({
-    queryKey: ["bundles", debouncedSearch],
-    queryFn: () => fetchBundles(debouncedSearch),
+    queryKey: ["bundles", debouncedSearch, statusFilter, prefixFilter],
+    queryFn: () =>
+      fetchBundles({
+        search: debouncedSearch || undefined,
+        posted: statusFilter === "all" ? undefined : statusFilter,
+        prefix: prefixFilter === "all" ? undefined : prefixFilter,
+      }),
     enabled: ready,
   });
 
@@ -294,15 +437,30 @@ export default function BundlesPage() {
   // we still want .map to be safe.
   const bundles = Array.isArray(bundlesQuery.data) ? bundlesQuery.data : [];
 
+  const showSelectionBar = selectionMode && (isAdmin || canManagePosting);
+  const selectableCodes = bundles.map((b) => b.bundle_code);
+  const allSelected =
+    selectableCodes.length > 0 && selected.size === selectableCodes.length;
+  const noneSelected = selected.size === 0;
+  const handleSelectAll = () => {
+    if (allSelected) {
+      // Clear without dropping out of selection mode — the X button is
+      // the explicit "exit" path.
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(selectableCodes));
+    }
+  };
+
   return (
     <div className="flex min-h-screen flex-col">
-      <AppHeader showAdmin />
+      {/* In selection mode the action bar *replaces* the app header and
+          takes its sticky slot — so the Delete / Post / etc. buttons
+          remain reachable no matter how far the user has scrolled. */}
+      {!showSelectionBar && <AppHeader showAdmin />}
 
-      {/* Selection-mode action bar. Shown when the user has ≥1 bulk
-          action available: Admin → Delete; Developer → Post / Draft
-          (+ Delete when acting as Admin). */}
-      {selectionMode && (isAdmin || canManagePosting) && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-4 py-2">
+      {showSelectionBar && (
+        <div className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-2 border-b bg-background/90 px-4 py-3 backdrop-blur">
           <div className="flex items-center gap-2">
             <Button
               variant="ghost"
@@ -311,12 +469,39 @@ export default function BundlesPage() {
                 setSelectionMode(false);
                 setSelected(new Set());
               }}
-              aria-label="Cancel selection"
+              aria-label="Exit selection"
             >
               <X className="h-5 w-5" />
             </Button>
+            {/* Master checkbox — select / deselect every currently-
+                visible bundle (search + filters are respected). */}
+            <button
+              type="button"
+              onClick={handleSelectAll}
+              aria-label={allSelected ? "Deselect all" : "Select all"}
+              className={cn(
+                "flex h-6 w-6 shrink-0 items-center justify-center rounded-sm border border-primary shadow-sm transition-colors",
+                allSelected
+                  ? "bg-primary text-primary-foreground"
+                  : noneSelected
+                    ? "bg-background"
+                    // Indeterminate — some but not all selected.
+                    : "bg-primary/60 text-primary-foreground",
+              )}
+            >
+              {allSelected ? (
+                <CheckSquare className="h-4 w-4" />
+              ) : !noneSelected ? (
+                // Indeterminate glyph — a small dash.
+                <span className="block h-0.5 w-2.5 rounded-full bg-current" />
+              ) : null}
+            </button>
             <span className="text-sm font-medium">
-              {selected.size} selected
+              {selected.size}
+              {bundles.length > 0 && (
+                <span className="text-muted-foreground"> / {bundles.length}</span>
+              )}{" "}
+              selected
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -419,6 +604,32 @@ export default function BundlesPage() {
             </Button>
           )}
           <Button
+            ref={filterBtnRef}
+            variant={activeFilterCount > 0 || filterOpen ? "default" : "outline"}
+            size="icon"
+            onClick={() => {
+              if (!filterOpen && filterBtnRef.current) {
+                setFilterRect(filterBtnRef.current.getBoundingClientRect());
+              }
+              setFilterOpen((v) => !v);
+            }}
+            title={
+              activeFilterCount > 0
+                ? `Filters (${activeFilterCount} active)`
+                : "Filters"
+            }
+            aria-label="Toggle filters"
+            aria-expanded={filterOpen}
+            className="relative"
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            {activeFilterCount > 0 && (
+              <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold text-destructive-foreground">
+                {activeFilterCount}
+              </span>
+            )}
+          </Button>
+          <Button
             variant="outline"
             size="icon"
             onClick={() => bundlesQuery.refetch()}
@@ -428,6 +639,46 @@ export default function BundlesPage() {
             <RefreshCw className={cn("h-4 w-4", bundlesQuery.isFetching && "animate-spin")} />
           </Button>
         </div>
+
+        {/* Filter popover — portal-mounted so it isn't clipped by any
+            scroll container. Available to every role. */}
+        {filterOpen && (
+          <FilterPanel
+            anchorRect={filterRect}
+            groups={[
+              {
+                label: "Status",
+                value: statusFilter,
+                onChange: (v) => setStatusFilter(v as StatusFilter),
+                options: [
+                  { value: "all", label: "All" },
+                  { value: 0, label: "Draft" },
+                  { value: 1, label: "Posted" },
+                  { value: 2, label: "Sold" },
+                ],
+              },
+              {
+                label: "Prefix",
+                value: prefixFilter,
+                onChange: (v) => setPrefixFilter(v as PrefixFilter),
+                options: [
+                  { value: "all", label: "All" },
+                  { value: "AV", label: "AV-" },
+                  { value: "AVG", label: "AVG-" },
+                ],
+              },
+            ]}
+            onClear={
+              activeFilterCount > 0
+                ? () => {
+                    setStatusFilter("all");
+                    setPrefixFilter("all");
+                  }
+                : null
+            }
+            onClose={() => setFilterOpen(false)}
+          />
+        )}
 
         {bundlesQuery.isLoading && <BundleListSkeleton count={6} />}
         {bundlesQuery.isError && (

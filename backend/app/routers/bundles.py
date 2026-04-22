@@ -212,8 +212,15 @@ def create_bundle(
 
 # ---------- GET ALL BUNDLES ----------
 @router.get("/", response_model=list[schemas.BundleOut])
-def read_bundles(search: str = None, db: Session = Depends(get_db)):
-    return crud.get_bundles(db, search=search)
+def read_bundles(
+    search: str = None,
+    # 0=draft, 1=posted, 2=sold. Omit for "all".
+    posted: int = None,
+    # Bundle-code prefix (e.g. "AV" or "AVG"); matches "{prefix}-%". Omit for "all".
+    prefix: str = None,
+    db: Session = Depends(get_db),
+):
+    return crud.get_bundles(db, search=search, posted=posted, prefix=prefix)
 
 
 # ---------- GET SINGLE BUNDLE ----------

@@ -105,13 +105,35 @@ def add_bundle_item(db: Session, bundle_code: str, item_data):
     return db_item
 
 
-def get_bundles(db: Session, search: str = None):
+def get_bundles(
+    db: Session,
+    search: str = None,
+    posted: int = None,
+    prefix: str = None,
+):
+    """List bundles, optionally filtered by free-text `search`, posting
+    status (`posted`: 0 draft / 1 posted / 2 sold), and a code prefix
+    like "AV" or "AVG" (matches `AV-%` / `AVG-%`). Filters combine with
+    AND — all are applied on top of each other so they work alongside
+    search.
+    """
     # selectinload issues exactly two extra queries (one for all items,
     # one for all images) regardless of bundle count, instead of N+1.
     query = (
         db.query(models.Bundle)
         .options(selectinload(models.Bundle.items), selectinload(models.Bundle.images))
     )
+
+    if posted is not None and posted in (0, 1, 2):
+        query = query.filter(models.Bundle.posted == posted)
+
+    if prefix:
+        # Strip to alphanumerics + hyphen to keep the LIKE pattern safe;
+        # the client only sends "AV" / "AVG"-shaped values anyway.
+        import re as _re
+        safe_prefix = _re.sub(r"[^A-Za-z0-9]", "", prefix)
+        if safe_prefix:
+            query = query.filter(models.Bundle.bundle_code.like(f"{safe_prefix}-%"))
 
     if search:
         search_filter = f"%{search}%"
