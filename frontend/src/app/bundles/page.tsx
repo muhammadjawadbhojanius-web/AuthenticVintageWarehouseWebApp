@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { Plus, X, Inbox, RefreshCw, Video, Download, Search, Trash2, Share, CheckCircle2, ThumbsUp, ThumbsDown } from "lucide-react";
+import { Plus, X, Inbox, RefreshCw, Video, Download, Search, Trash2, Share, CheckCircle2, ThumbsUp, ThumbsDown, CheckSquare } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { BundleCard } from "@/components/bundle-card";
 import { Button } from "@/components/ui/button";
@@ -28,7 +28,7 @@ export default function BundlesPage() {
   const { ready } = useAuthGuard();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { role, isDeveloper } = useAuth();
+  const { role } = useAuth();
   const { toast } = useToast();
 
   const [selectionMode, setSelectionMode] = useState(false);
@@ -42,19 +42,26 @@ export default function BundlesPage() {
   // Download button can't fire two downloads + two toasts before React
   // re-renders the row with its "Saved" / "Downloaded" state.
   const busyIdsRef = useRef<Set<number>>(new Set());
-  // Same pattern for the bulk-delete button — the Dialog's OK button can
-  // get a second synthetic tap on mobile before it unmounts.
-  const bulkDeletingRef = useRef(false);
   const prefetchAbortRef = useRef<AbortController | null>(null);
   const [deleteFor, setDeleteFor] = useState<string | null>(null);
-  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-  // Posted → Draft confirmation. Going the other direction is unprompted.
-  const [unpostFor, setUnpostFor] = useState<Bundle | null>(null);
-  // Bulk posted-toggle confirmation (only fires for Mark as Draft; bulk
-  // Mark as Posted is unprompted).
-  const [bulkUnpostOpen, setBulkUnpostOpen] = useState(false);
-  const bulkUnpostingRef = useRef(false);
-  const bulkPostingRef = useRef(false);
+  // Backward status-change confirmation (any move that lowers the rank —
+  // Sold → Posted, Sold → Draft, Posted → Draft). Forward moves fire
+  // immediately without a dialog.
+  const [pendingStatus, setPendingStatus] = useState<{
+    bundle: Bundle;
+    next: number;
+  } | null>(null);
+  // Unified bulk-action confirm. Every bulk action — delete, and every
+  // status target — opens this dialog, which lists the exact bundle
+  // codes being operated on so the user can double-check before
+  // committing. The per-card flow is separate; this is only for the
+  // selection bar.
+  const [bulkConfirm, setBulkConfirm] = useState<
+    | { kind: "delete" }
+    | { kind: "status"; target: 0 | 1 | 2 }
+    | null
+  >(null);
+  const bulkActionRef = useRef(false);
   const uploadQueue = useUploadQueue();
   const device = useMemo(() => detectDevice(), []);
   const isIOS = device === "ios";
@@ -82,13 +89,14 @@ export default function BundlesPage() {
 
   const isAdmin = role === "Admin";
   const isListingExec = role === "Listing Executives";
+  const isContentCreator = role === "Content Creators";
   const canDownload = isAdmin || isListingExec;
-  // Feature flag: Posted / Draft is a developer-only feature for now.
-  // Gated on the real JWT role (isDeveloper), not the effective role —
-  // that way a Developer still sees / uses it while impersonating any
-  // other role to test. To open this to Admin + Listing Executives
-  // later, switch this line to `isAdmin || isListingExec`.
-  const canManagePosting = isDeveloper;
+  // Posted / Draft / Sold is Admin + Listing Executive. Content
+  // Creators build bundles but don't manage their posting lifecycle.
+  const canManagePosting = isAdmin || isListingExec;
+  // Only Admins and Content Creators can create new bundles. Listing
+  // Executives have a read-only + posting-toggle view.
+  const canCreateBundle = isAdmin || isContentCreator;
 
   const bundlesQuery = useQuery({
     queryKey: ["bundles", debouncedSearch],
@@ -107,12 +115,15 @@ export default function BundlesPage() {
     },
   });
 
+  const statusLabel = (n: number) =>
+    n === 2 ? "sold" : n === 1 ? "posted" : "draft";
+
   const postedMutation = useMutation({
-    mutationFn: (v: { code: string; posted: boolean }) =>
+    mutationFn: (v: { code: string; posted: number }) =>
       updateBundlePosted(v.code, v.posted),
     onSuccess: (_, v) => {
       toast({
-        title: v.posted ? `${v.code} marked posted` : `${v.code} back to draft`,
+        title: `${v.code} marked ${statusLabel(v.posted)}`,
         variant: "success",
       });
       queryClient.invalidateQueries({ queryKey: ["bundles"] });
@@ -137,16 +148,19 @@ export default function BundlesPage() {
   }
 
   /**
-   * Per-card posted pill click. Draft → Posted fires immediately;
-   * Posted → Draft opens a confirm dialog (guarded in case someone taps
-   * the pill by mistake on a bundle that's already live).
+   * User picked a status from the per-card dropdown. Rank: 0 draft <
+   * 1 posted < 2 sold. Forward moves (rank goes up) fire immediately;
+   * backward moves open a confirm dialog so the Listing Exec doesn't
+   * accidentally undo a sale or un-post a live item.
    */
-  const handleTogglePosted = (bundle: Bundle) => {
-    if (bundle.posted) {
-      setUnpostFor(bundle);
+  const handleChangeStatus = (bundle: Bundle, next: number) => {
+    const current = bundle.posted ?? 0;
+    if (next === current) return;
+    if (next < current) {
+      setPendingStatus({ bundle, next });
       return;
     }
-    postedMutation.mutate({ code: bundle.bundle_code, posted: true });
+    postedMutation.mutate({ code: bundle.bundle_code, posted: next });
   };
 
   const toggleSelected = (code: string, next: boolean) => {
@@ -311,51 +325,32 @@ export default function BundlesPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={selected.size === 0 || postedMutation.isPending}
-                  onClick={async () => {
-                    // Bulk Mark Posted fires without a confirm — moving to
-                    // posted is the safe direction.
-                    if (bulkPostingRef.current) return;
-                    bulkPostingRef.current = true;
-                    const codes = Array.from(selected);
-                    setSelectionMode(false);
-                    setSelected(new Set());
-                    try {
-                      const results = await Promise.allSettled(
-                        codes.map((c) => updateBundlePosted(c, true)),
-                      );
-                      const failed = results.filter((r) => r.status === "rejected").length;
-                      queryClient.invalidateQueries({ queryKey: ["bundles"] });
-                      if (failed === 0) {
-                        toast({
-                          title: `Marked ${codes.length} posted`,
-                          variant: "success",
-                        });
-                      } else {
-                        toast({
-                          title: `Marked ${codes.length - failed} of ${codes.length} posted`,
-                          description: `${failed} failed`,
-                          variant: "warning",
-                        });
-                      }
-                    } finally {
-                      bulkPostingRef.current = false;
-                    }
-                  }}
-                  aria-label="Mark selected posted"
+                  disabled={selected.size === 0}
+                  onClick={() => setBulkConfirm({ kind: "status", target: 0 })}
+                  aria-label="Mark selected as draft"
                 >
-                  <ThumbsUp className="h-4 w-4" />
-                  Post
+                  <ThumbsDown className="h-4 w-4" />
+                  Draft
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
                   disabled={selected.size === 0}
-                  onClick={() => setBulkUnpostOpen(true)}
-                  aria-label="Mark selected as draft"
+                  onClick={() => setBulkConfirm({ kind: "status", target: 1 })}
+                  aria-label="Mark selected posted"
                 >
-                  <ThumbsDown className="h-4 w-4" />
-                  Draft
+                  <ThumbsUp className="h-4 w-4" />
+                  Posted
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={selected.size === 0}
+                  onClick={() => setBulkConfirm({ kind: "status", target: 2 })}
+                  aria-label="Mark selected sold"
+                >
+                  <span className="text-base leading-none" aria-hidden>💵</span>
+                  Sold
                 </Button>
               </>
             )}
@@ -364,7 +359,7 @@ export default function BundlesPage() {
                 variant="destructive"
                 size="sm"
                 disabled={selected.size === 0}
-                onClick={() => setBulkDeleteOpen(true)}
+                onClick={() => setBulkConfirm({ kind: "delete" })}
                 aria-label="Delete selected bundles"
               >
                 <Trash2 className="h-4 w-4" />
@@ -395,6 +390,34 @@ export default function BundlesPage() {
               </button>
             )}
           </div>
+          {/* Desktop-friendly entry to bulk selection. Long-press still
+              works on mobile / right-click still works on desktop — this
+              button is the discoverable path, visible to anyone who has
+              at least one bulk action available. */}
+          {(isAdmin || canManagePosting) && (
+            <Button
+              variant={selectionMode ? "default" : "outline"}
+              size="icon"
+              onClick={() => {
+                if (selectionMode) {
+                  setSelectionMode(false);
+                  setSelected(new Set());
+                } else {
+                  setSelectionMode(true);
+                }
+              }}
+              title={selectionMode ? "Cancel selection" : "Select bundles"}
+              aria-label={
+                selectionMode ? "Cancel selection" : "Select bundles"
+              }
+            >
+              {selectionMode ? (
+                <X className="h-4 w-4" />
+              ) : (
+                <CheckSquare className="h-4 w-4" />
+              )}
+            </Button>
+          )}
           <Button
             variant="outline"
             size="icon"
@@ -464,7 +487,7 @@ export default function BundlesPage() {
                   onDelete={() => setDeleteFor(code)}
                   onCopy={() => handleCopy(b)}
                   canManagePosting={canManagePosting}
-                  onTogglePosted={() => handleTogglePosted(b)}
+                  onChangeStatus={(next) => handleChangeStatus(b, next)}
                 />
               );
             })}
@@ -472,13 +495,15 @@ export default function BundlesPage() {
         )}
       </div>
 
-      {/* FAB */}
-      <button
-        onClick={() => router.push("/bundles/new")}
-        className="fixed bottom-12 right-6 z-10 flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-primary-foreground shadow-lg transition-transform hover:scale-105"
-      >
-        <Plus className="h-5 w-5" /> Add Bundle
-      </button>
+      {/* FAB — hidden for Listing Executives (they only view + post). */}
+      {canCreateBundle && (
+        <button
+          onClick={() => router.push("/bundles/new")}
+          className="fixed bottom-12 right-6 z-10 flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-primary-foreground shadow-lg transition-transform hover:scale-105"
+        >
+          <Plus className="h-5 w-5" /> Add Bundle
+        </button>
+      )}
 
       {/* Download dialog */}
       <Dialog open={!!downloadFor} onOpenChange={(v) => !v && handleCloseDownload()}>
@@ -611,150 +636,158 @@ export default function BundlesPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Bulk delete confirm dialog (admin-only) */}
-      <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              Delete {selected.size} bundle{selected.size === 1 ? "" : "s"}?
-            </DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            This permanently deletes every selected bundle and all of its media. Cannot be undone.
-          </p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setBulkDeleteOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={bulkDeletingRef.current}
-              onClick={async () => {
-                // Ref guard — a fast double-tap on mobile can fire onClick
-                // twice before the dialog unmounts. Without this we'd get
-                // two "Deleting N bundles…" toasts and N extra DELETE
-                // requests against already-gone rows.
-                if (bulkDeletingRef.current) return;
-                bulkDeletingRef.current = true;
-                const codes = Array.from(selected);
-                setBulkDeleteOpen(false);
-                setSelectionMode(false);
-                setSelected(new Set());
-                // No intermediate "Deleting N bundles…" toast — on LAN the
-                // deletions finish in ~1 s so that toast would still be on
-                // screen when the result toast arrives, and the two would
-                // stack up as if a duplicate pop-up had fired.
-                try {
-                  const results = await Promise.allSettled(codes.map((c) => apiDeleteBundle(c)));
-                  const failed = results.filter((r) => r.status === "rejected").length;
-                  queryClient.invalidateQueries({ queryKey: ["bundles"] });
-                  if (failed === 0) {
-                    toast({ title: `Deleted ${codes.length} bundle${codes.length === 1 ? "" : "s"}`, variant: "success" });
-                  } else {
-                    toast({
-                      title: `Deleted ${codes.length - failed} of ${codes.length}`,
-                      description: `${failed} failed`,
-                      variant: "warning",
-                    });
-                  }
-                } finally {
-                  bulkDeletingRef.current = false;
-                }
-              }}
-            >
-              Delete {selected.size}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Single posted → draft confirm. Only fires when going backwards;
-          draft → posted is unprompted. */}
+      {/* Unified bulk-action confirm. Every bulk action routes through
+          this — Delete, and each status target (Draft / Posted / Sold).
+          Lists the exact bundle codes being operated on so the user
+          can double-check before committing. */}
       <Dialog
-        open={!!unpostFor}
-        onOpenChange={(v) => !v && setUnpostFor(null)}
+        open={!!bulkConfirm}
+        onOpenChange={(v) => !v && !bulkActionRef.current && setBulkConfirm(null)}
       >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Mark as draft?</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            <strong>{unpostFor?.bundle_code}</strong> is currently posted. Are you
-            sure you want to revert it to draft?
-          </p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUnpostFor(null)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                if (unpostFor) {
-                  postedMutation.mutate({
-                    code: unpostFor.bundle_code,
-                    posted: false,
-                  });
-                }
-                setUnpostFor(null);
-              }}
-            >
-              <ThumbsDown className="h-4 w-4" />
-              Mark as draft
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Bulk posted → draft confirm. Symmetric to the bulk-delete dialog —
-          double-fire-guarded and clears selection on success. */}
-      <Dialog open={bulkUnpostOpen} onOpenChange={setBulkUnpostOpen}>
-        <DialogContent>
+        <DialogContent
+          onClose={
+            bulkActionRef.current ? undefined : () => setBulkConfirm(null)
+          }
+        >
           <DialogHeader>
             <DialogTitle>
-              Mark {selected.size} bundle{selected.size === 1 ? "" : "s"} as draft?
+              {bulkConfirm?.kind === "delete"
+                ? `Delete ${selected.size} bundle${selected.size === 1 ? "" : "s"}?`
+                : bulkConfirm?.kind === "status"
+                  ? `Mark ${selected.size} bundle${selected.size === 1 ? "" : "s"} as ${statusLabel(bulkConfirm.target)}?`
+                  : ""}
             </DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Any of these that are currently posted will revert to draft. Bundles
-            already in draft stay unchanged.
-          </p>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              {bulkConfirm?.kind === "delete"
+                ? "This permanently deletes every bundle below along with its items and media. Cannot be undone."
+                : bulkConfirm?.kind === "status"
+                  ? bulkConfirm.target === 2
+                    ? "Every bundle below will be marked sold."
+                    : bulkConfirm.target === 1
+                      ? "Every bundle below will be marked posted. Bundles already sold will revert to posted."
+                      : "Every bundle below will revert to draft. Bundles already at a higher status will move down."
+                  : ""}
+            </p>
+            {/* Bundle code list — scrollable so large selections still
+                fit on a phone screen without stretching the dialog. */}
+            <div className="max-h-[40vh] overflow-y-auto rounded-md border bg-muted/20 p-2">
+              <div className="flex flex-wrap gap-1.5">
+                {Array.from(selected)
+                  .sort()
+                  .map((code) => (
+                    <span
+                      key={code}
+                      className="inline-flex items-center rounded-md border bg-card px-2 py-0.5 font-mono text-xs font-semibold"
+                    >
+                      {code}
+                    </span>
+                  ))}
+              </div>
+            </div>
+          </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setBulkUnpostOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => setBulkConfirm(null)}
+              disabled={bulkActionRef.current}
+            >
               Cancel
             </Button>
             <Button
-              disabled={bulkUnpostingRef.current}
+              variant={bulkConfirm?.kind === "delete" ? "destructive" : "default"}
+              disabled={bulkActionRef.current}
               onClick={async () => {
-                if (bulkUnpostingRef.current) return;
-                bulkUnpostingRef.current = true;
+                if (!bulkConfirm) return;
+                if (bulkActionRef.current) return;
+                bulkActionRef.current = true;
+                const action = bulkConfirm;
                 const codes = Array.from(selected);
-                setBulkUnpostOpen(false);
+                setBulkConfirm(null);
                 setSelectionMode(false);
                 setSelected(new Set());
                 try {
                   const results = await Promise.allSettled(
-                    codes.map((c) => updateBundlePosted(c, false)),
+                    codes.map((c) =>
+                      action.kind === "delete"
+                        ? apiDeleteBundle(c)
+                        : updateBundlePosted(c, action.target),
+                    ),
                   );
                   const failed = results.filter((r) => r.status === "rejected").length;
                   queryClient.invalidateQueries({ queryKey: ["bundles"] });
+                  const verb =
+                    action.kind === "delete"
+                      ? "Deleted"
+                      : `Marked as ${statusLabel(action.target)}`;
                   if (failed === 0) {
                     toast({
-                      title: `Reverted ${codes.length} to draft`,
+                      title: `${verb} ${codes.length} bundle${codes.length === 1 ? "" : "s"}`,
                       variant: "success",
                     });
                   } else {
                     toast({
-                      title: `Reverted ${codes.length - failed} of ${codes.length}`,
+                      title: `${verb} ${codes.length - failed} of ${codes.length}`,
                       description: `${failed} failed`,
                       variant: "warning",
                     });
                   }
                 } finally {
-                  bulkUnpostingRef.current = false;
+                  bulkActionRef.current = false;
                 }
               }}
             >
-              <ThumbsDown className="h-4 w-4" />
-              Mark as draft
+              {bulkConfirm?.kind === "delete"
+                ? `Delete ${selected.size}`
+                : bulkConfirm?.kind === "status"
+                  ? `Mark as ${statusLabel(bulkConfirm.target)}`
+                  : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Single backward status-change confirm. Fires only when the
+          user picks a lower rank from the dropdown (Sold → Posted,
+          Sold → Draft, Posted → Draft). Forward moves are unprompted. */}
+      <Dialog
+        open={!!pendingStatus}
+        onOpenChange={(v) => !v && setPendingStatus(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Mark as {pendingStatus ? statusLabel(pendingStatus.next) : ""}?
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            <strong>{pendingStatus?.bundle.bundle_code}</strong> is currently{" "}
+            <span className="font-medium">
+              {pendingStatus ? statusLabel(pendingStatus.bundle.posted ?? 0) : ""}
+            </span>
+            . Are you sure you want to move it back to{" "}
+            <span className="font-medium">
+              {pendingStatus ? statusLabel(pendingStatus.next) : ""}
+            </span>
+            ?
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingStatus(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (pendingStatus) {
+                  postedMutation.mutate({
+                    code: pendingStatus.bundle.bundle_code,
+                    posted: pendingStatus.next,
+                  });
+                }
+                setPendingStatus(null);
+              }}
+            >
+              Mark as {pendingStatus ? statusLabel(pendingStatus.next) : ""}
             </Button>
           </DialogFooter>
         </DialogContent>

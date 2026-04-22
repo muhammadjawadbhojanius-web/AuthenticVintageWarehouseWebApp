@@ -43,7 +43,8 @@ class BundleStatusUpdate(BaseModel):
 
 
 class BundlePostedUpdate(BaseModel):
-    posted: bool
+    # 0 = draft, 1 = posted, 2 = sold
+    posted: int
 
 class BundleImageOut(BaseModel):
     id: int

@@ -140,13 +140,15 @@ def update_bundle_status(db: Session, bundle_code: str, new_status: str):
     return bundle
 
 
-def update_bundle_posted(db: Session, bundle_code: str, posted: bool):
+def update_bundle_posted(db: Session, bundle_code: str, posted: int):
     bundle = get_bundle_by_code(db, bundle_code)
 
     if not bundle:
         return None
 
-    bundle.posted = 1 if posted else 0
+    # 0 = draft, 1 = posted, 2 = sold. Clamp to the known range so a
+    # bad caller can't wedge the DB into an undefined state.
+    bundle.posted = max(0, min(2, int(posted)))
     db.commit()
     db.refresh(bundle)
 

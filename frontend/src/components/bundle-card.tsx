@@ -1,6 +1,8 @@
 "use client";
 
-import { memo, useMemo, useRef } from "react";
+import * as React from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Package,
   Trash2,
@@ -10,6 +12,7 @@ import {
   Layers,
   ThumbsUp,
   ThumbsDown,
+  Check,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -18,6 +21,66 @@ import { countMedia } from "@/lib/media-status";
 import { isVideoFilename, mediaUrlFor } from "@/lib/media";
 import { useInView } from "@/hooks/use-in-view";
 import type { Bundle } from "@/lib/types";
+
+// ---------------------------------------------------------------------------
+// Posting status — kept alongside the card because the trigger, the
+// dropdown, and the bulk bar all need the same icon / label / colour.
+// ---------------------------------------------------------------------------
+
+/** 0 = draft, 1 = posted, 2 = sold. */
+export type PostingStatus = 0 | 1 | 2;
+
+interface StatusMeta {
+  label: string;
+  /** Footer action-button tone (same palette the other actions use). */
+  trigger: string;
+  /** Colour applied to the icon inside the dropdown menu row. */
+  iconTint: string;
+}
+
+const STATUS_META: Record<PostingStatus, StatusMeta> = {
+  0: {
+    label: "Draft",
+    trigger: "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+    iconTint: "text-muted-foreground",
+  },
+  1: {
+    label: "Posted",
+    trigger: "text-success hover:bg-success/10",
+    iconTint: "text-success",
+  },
+  2: {
+    label: "Sold",
+    // Cash-y amber — distinct from the orange "action" tone used on
+    // Copy/Download so Sold doesn't visually blur into them.
+    trigger:
+      "text-amber-600 hover:bg-amber-500/10 dark:text-amber-400 dark:hover:bg-amber-400/10",
+    iconTint: "text-amber-600 dark:text-amber-400",
+  },
+};
+
+function statusIcon(s: PostingStatus, size: "sm" | "md" = "md"): React.ReactNode {
+  const svgClass = size === "md" ? "h-5 w-5" : "h-4 w-4";
+  const emojiClass = size === "md" ? "text-xl" : "text-lg";
+  switch (s) {
+    case 2:
+      // 💵 banknote — the user asked for "cash emoji". Using an emoji
+      // (not a Lucide icon) keeps the UI instantly readable as Sold.
+      return (
+        <span className={cn("leading-none", emojiClass)} aria-hidden>
+          💵
+        </span>
+      );
+    case 1:
+      return <ThumbsUp className={svgClass} />;
+    default:
+      return <ThumbsDown className={svgClass} />;
+  }
+}
+
+function coerceStatus(n: unknown): PostingStatus {
+  return n === 2 ? 2 : n === 1 ? 1 : 0;
+}
 
 export interface BundleCardProps {
   bundle: Bundle;
@@ -34,11 +97,12 @@ export interface BundleCardProps {
   onDelete?: () => void;
   onCopy?: () => void;
   /**
-   * Tap on the Posted / Draft pill. Current state is derived from
-   * `bundle.posted`. The page decides when to confirm (posted → draft
-   * shows a prompt; draft → posted fires instantly).
+   * User picked a new posting status from the dropdown. Current state
+   * is on `bundle.posted`. The page decides whether to confirm — any
+   * backward move (new rank lower than current) prompts, any forward
+   * move fires instantly.
    */
-  onTogglePosted?: () => void;
+  onChangeStatus?: (next: PostingStatus) => void;
   canDownload?: boolean;
   canDelete?: boolean;
   /** Admin + Listing Executives. Renders the Posted/Draft pill. */
@@ -196,7 +260,7 @@ function BundleCardImpl({
   onDownload,
   onDelete,
   onCopy,
-  onTogglePosted,
+  onChangeStatus,
   canDownload = false,
   canDelete = false,
   canManagePosting = false,
@@ -256,10 +320,17 @@ function BundleCardImpl({
   );
 
   const showActionRow =
-    !selectionMode && (onCopy || (canDownload && onDownload) || (canDelete && onDelete));
+    !selectionMode &&
+    (onCopy ||
+      (canDownload && onDownload) ||
+      (canDelete && onDelete) ||
+      (canManagePosting && onChangeStatus));
 
   const actionCount =
-    (onCopy ? 1 : 0) + (canDownload ? 1 : 0) + (canDelete ? 1 : 0);
+    (onCopy ? 1 : 0) +
+    (canDownload ? 1 : 0) +
+    (canManagePosting ? 1 : 0) +
+    (canDelete ? 1 : 0);
 
   return (
     <Card
@@ -294,36 +365,23 @@ function BundleCardImpl({
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* Top row: code + badges stack (media badge + posted pill) */}
+          {/* Top row: code + media badge */}
           <div className="flex items-start gap-2">
             <h3 className="min-w-0 flex-1 truncate text-base font-bold tracking-tight text-foreground">
               {bundle.bundle_code}
             </h3>
-            <div className="flex shrink-0 flex-col items-end gap-1">
-              <span
-                className={cn(
-                  "rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide",
-                  isUploading
-                    ? "bg-warning/15 text-warning"
-                    : hasMedia
-                      ? "bg-success/15 text-success"
-                      : "bg-muted text-muted-foreground"
-                )}
-              >
-                {isUploading ? "UPLOADING" : mediaBadgeLabel(photos, videos)}
-              </span>
-              {canManagePosting && !selectionMode && (
-                <PostedPill
-                  posted={!!bundle.posted}
-                  onClick={(e) => {
-                    // Prevent the card's onClick (which would navigate or
-                    // toggle selection) from firing.
-                    e.stopPropagation();
-                    onTogglePosted?.();
-                  }}
-                />
+            <span
+              className={cn(
+                "shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide",
+                isUploading
+                  ? "bg-warning/15 text-warning"
+                  : hasMedia
+                    ? "bg-success/15 text-success"
+                    : "bg-muted text-muted-foreground"
               )}
-            </div>
+            >
+              {isUploading ? "UPLOADING" : mediaBadgeLabel(photos, videos)}
+            </span>
           </div>
 
           {/* Italic quoted name */}
@@ -393,6 +451,12 @@ function BundleCardImpl({
               ariaLabel="Download bundle"
             />
           )}
+          {canManagePosting && onChangeStatus && (
+            <StatusButton
+              status={coerceStatus(bundle.posted)}
+              onPick={(next) => onChangeStatus(next)}
+            />
+          )}
           {canDelete && (
             <ActionButton
               label="Delete"
@@ -411,43 +475,32 @@ function BundleCardImpl({
   );
 }
 
-interface PostedPillProps {
-  posted: boolean;
-  onClick: (e: React.MouseEvent) => void;
-}
-
-/** Small clickable status pill: ThumbsUp when posted, ThumbsDown when draft. */
-function PostedPill({ posted, onClick }: PostedPillProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={posted ? "Mark bundle as draft" : "Mark bundle as posted"}
-      title={posted ? "Posted — tap to revert to draft" : "Draft — tap to mark posted"}
-      className={cn(
-        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide transition-colors",
-        posted
-          ? "bg-success/15 text-success hover:bg-success/25"
-          : "bg-muted text-muted-foreground hover:bg-muted/80",
-      )}
-    >
-      {posted ? (
-        <ThumbsUp className="h-3 w-3" />
-      ) : (
-        <ThumbsDown className="h-3 w-3" />
-      )}
-      {posted ? "POSTED" : "DRAFT"}
-    </button>
-  );
-}
+type ActionTone = "action" | "destructive" | "success" | "muted";
 
 interface ActionButtonProps {
   label: string;
   icon: React.ReactNode;
-  tone: "action" | "destructive";
+  tone: ActionTone;
   disabled?: boolean;
   onClick: (e: React.MouseEvent) => void;
   ariaLabel: string;
+}
+
+function toneClasses(tone: ActionTone): string {
+  switch (tone) {
+    case "action":
+      return "text-orange-700 hover:bg-orange-500/5 dark:text-orange-400 dark:hover:bg-orange-400/10";
+    case "destructive":
+      return "text-red-600 hover:bg-red-500/5 dark:text-red-400 dark:hover:bg-red-400/10";
+    case "success":
+      // Posted state — green, matches the muted-green media badge so the
+      // card reads as "this is live" at a glance.
+      return "text-success hover:bg-success/10";
+    case "muted":
+      // Draft state — subdued, so the footer doesn't shout while the
+      // bundle is still being worked on.
+      return "text-muted-foreground hover:bg-muted/50 hover:text-foreground";
+  }
 }
 
 function ActionButton({
@@ -467,14 +520,159 @@ function ActionButton({
       className={cn(
         "flex flex-col items-center justify-center gap-1 py-3 text-xs font-semibold transition-colors",
         "disabled:pointer-events-none disabled:opacity-60",
-        tone === "action"
-          ? "text-orange-700 hover:bg-orange-500/5 dark:text-orange-400 dark:hover:bg-orange-400/10"
-          : "text-red-600 hover:bg-red-500/5 dark:text-red-400 dark:hover:bg-red-400/10"
+        toneClasses(tone),
       )}
     >
       {icon}
       <span>{label}</span>
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Status button + portal dropdown.
+//
+// Rendered in the footer like the other action buttons, but instead of
+// toggling on click it opens a 3-option menu (Draft / Posted / Sold).
+// The menu uses createPortal so the Card's overflow-hidden doesn't clip
+// it, and falls back to opening upward when there isn't room below.
+// ---------------------------------------------------------------------------
+
+interface StatusButtonProps {
+  status: PostingStatus;
+  onPick: (next: PostingStatus) => void;
+}
+
+function StatusButton({ status, onPick }: StatusButtonProps) {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+
+  const meta = STATUS_META[status];
+
+  const handleOpen = (e: React.MouseEvent) => {
+    // Stop so the Card's own onClick doesn't treat this as a navigate /
+    // selection toggle.
+    e.stopPropagation();
+    if (btnRef.current) setRect(btnRef.current.getBoundingClientRect());
+    setOpen((v) => !v);
+  };
+
+  const handlePick = (next: PostingStatus) => {
+    setOpen(false);
+    // No-op if the user re-picks the current state.
+    if (next !== status) onPick(next);
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={handleOpen}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Change status — current: ${meta.label}`}
+        className={cn(
+          "flex flex-col items-center justify-center gap-1 py-3 text-xs font-semibold transition-colors",
+          meta.trigger,
+        )}
+      >
+        {statusIcon(status, "md")}
+        <span>{meta.label}</span>
+      </button>
+      <StatusMenu
+        open={open}
+        anchorRect={rect}
+        current={status}
+        onPick={handlePick}
+        onClose={() => setOpen(false)}
+      />
+    </>
+  );
+}
+
+interface StatusMenuProps {
+  open: boolean;
+  anchorRect: DOMRect | null;
+  current: PostingStatus;
+  onPick: (next: PostingStatus) => void;
+  onClose: () => void;
+}
+
+function StatusMenu({ open, anchorRect, current, onPick, onClose }: StatusMenuProps) {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, onClose]);
+
+  if (!open || !anchorRect || typeof document === "undefined") return null;
+
+  // Rough menu height estimate: 3 rows × 36 px + 8 px padding.
+  const menuHeight = 116;
+  const spaceBelow = window.innerHeight - anchorRect.bottom;
+  const openUp = spaceBelow < menuHeight + 8;
+  const top = openUp
+    ? Math.max(8, anchorRect.top - menuHeight - 4)
+    : anchorRect.bottom + 4;
+  // Right-anchor so the menu doesn't blow past the right edge on phones
+  // where the button sits near the right side of the footer.
+  const right = Math.max(8, window.innerWidth - anchorRect.right);
+
+  const options: PostingStatus[] = [0, 1, 2];
+
+  return createPortal(
+    <div
+      ref={ref}
+      role="menu"
+      className="fixed z-[60] w-44 overflow-hidden rounded-lg border bg-background shadow-lg"
+      style={{ top, right }}
+    >
+      {options.map((s) => {
+        const m = STATUS_META[s];
+        const active = s === current;
+        return (
+          <button
+            key={s}
+            type="button"
+            role="menuitem"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPick(s);
+            }}
+            className={cn(
+              "flex w-full items-center gap-2.5 px-3 py-2.5 text-sm transition-colors hover:bg-accent",
+              active && "bg-accent/50",
+            )}
+          >
+            <span
+              className={cn(
+                "flex h-5 w-5 items-center justify-center",
+                m.iconTint,
+              )}
+            >
+              {statusIcon(s, "md")}
+            </span>
+            <span className="flex-1 text-left font-medium">{m.label}</span>
+            {active && <Check className="h-3.5 w-3.5 text-muted-foreground" />}
+          </button>
+        );
+      })}
+    </div>,
+    document.body,
   );
 }
 

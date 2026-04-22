@@ -41,6 +41,13 @@ with database.engine.connect() as _conn:
     _cols = {row[1] for row in _conn.execute(_text("PRAGMA table_info(bundles)")).fetchall()}
     if "posted" not in _cols:
         _conn.execute(_text("ALTER TABLE bundles ADD COLUMN posted INTEGER NOT NULL DEFAULT 0"))
+    # Guarantee bundle_code uniqueness at the DB level. declared `unique=True`
+    # on the model only applies to tables freshly created by create_all(); a
+    # DB from before that annotation won't actually have the constraint,
+    # which is how two bundles could ever end up with the same code.
+    _conn.execute(_text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_bundles_bundle_code ON bundles(bundle_code)"
+    ))
     _conn.commit()
 
 # Create uploads directory if it doesn't exist

@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import shutil
 import logging
@@ -27,9 +28,185 @@ VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm", ".m4v", ".3gp"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+# ---------------------------------------------------------------------------
+# Bundle-code rename / swap helpers.
+#
+# The uploads layout encodes the bundle code in three places that all have
+# to move together when a code changes:
+#   - folder name:   uploads/{code}/
+#   - file prefix:   bundle-{code}_img_1.jpg
+#   - DB path:       BundleImage.image_path = "uploads/{code}/bundle-{code}_..."
+#
+# All of these helpers keep them in sync and leave the filesystem in a
+# known-good state on any failure (either fully done or fully rolled back).
+# ---------------------------------------------------------------------------
+
+
+def _rewrite_image_path(path: str, old_code: str, new_code: str) -> str:
+    """Rewrite an image_path string so the folder segment AND the file
+    prefix both track a code rename. Handles both / (Linux) and \\ (Windows)
+    separators so it works in Docker and in the Windows-native setup."""
+    old = re.escape(old_code)
+    pattern = rf"(uploads[\\/]){old}([\\/]bundle-){old}(_)"
+    return re.sub(pattern, rf"\g<1>{new_code}\g<2>{new_code}\g<3>", path)
+
+
+def _rename_bundle_on_disk(old_code: str, new_code: str):
+    """Atomically rename uploads/{old_code}/ → uploads/{new_code}/ and
+    every bundle-{old_code}_* file inside it to bundle-{new_code}_*.
+
+    On any filesystem error the function reverses what it has already
+    done before re-raising, so the caller is guaranteed to see either
+    a full rename or the original state.
+
+    Does NOT touch the DB — call sites update image_path afterwards.
+    """
+    old_dir = os.path.join(UPLOADS_DIR, old_code)
+    new_dir = os.path.join(UPLOADS_DIR, new_code)
+
+    if not os.path.exists(old_dir):
+        # Bundle has no uploads yet. Nothing on disk to rename.
+        return
+    if os.path.exists(new_dir):
+        raise FileExistsError(
+            f"Upload directory for {new_code} already exists on disk"
+        )
+
+    os.rename(old_dir, new_dir)
+    renamed = []
+    try:
+        for fn in os.listdir(new_dir):
+            prefix = f"bundle-{old_code}_"
+            if not fn.startswith(prefix):
+                # File name that doesn't encode the bundle code — leave it
+                # untouched (users might name files themselves one day).
+                continue
+            new_name = f"bundle-{new_code}_" + fn[len(prefix):]
+            src = os.path.join(new_dir, fn)
+            dst = os.path.join(new_dir, new_name)
+            os.rename(src, dst)
+            renamed.append((src, dst))
+    except OSError:
+        # Reverse file renames in LIFO order, then put the folder back.
+        for src, dst in reversed(renamed):
+            try:
+                os.rename(dst, src)
+            except OSError:
+                pass
+        try:
+            os.rename(new_dir, old_dir)
+        except OSError:
+            pass
+        raise
+
+
+def _swap_bundles_on_disk(code_a: str, code_b: str):
+    """Swap uploads/{code_a}/ and uploads/{code_b}/ including all file
+    names inside. Uses a temp folder so the two source dirs never try to
+    occupy the same name at once. Rolls back on any failure.
+    """
+    dir_a = os.path.join(UPLOADS_DIR, code_a)
+    dir_b = os.path.join(UPLOADS_DIR, code_b)
+    tmp_dir = os.path.join(UPLOADS_DIR, f".__swap_{uuid.uuid4().hex[:8]}__")
+
+    a_exists = os.path.exists(dir_a)
+    b_exists = os.path.exists(dir_b)
+
+    # Stage of progress so we know how far to rewind on exception.
+    # 0 = nothing done; 1 = A moved to tmp; 2 = B moved to A; 3 = tmp
+    # moved to B; 4 = files in A renamed; 5 = files in B renamed.
+    stage = 0
+    try:
+        if a_exists:
+            os.rename(dir_a, tmp_dir)
+            stage = 1
+        if b_exists:
+            os.rename(dir_b, dir_a)
+            stage = 2
+        if a_exists:
+            os.rename(tmp_dir, dir_b)
+            stage = 3
+        if b_exists:
+            _rename_files_in_folder(dir_a, code_b, code_a)
+            stage = 4
+        if a_exists:
+            _rename_files_in_folder(dir_b, code_a, code_b)
+            stage = 5
+    except Exception:
+        try:
+            if stage >= 5:
+                _rename_files_in_folder(dir_b, code_b, code_a)
+            if stage >= 4:
+                _rename_files_in_folder(dir_a, code_a, code_b)
+            if stage >= 3:
+                os.rename(dir_b, tmp_dir)
+            if stage >= 2:
+                os.rename(dir_a, dir_b)
+            if stage >= 1:
+                os.rename(tmp_dir, dir_a)
+        except Exception:
+            logger.exception(
+                "Swap rollback also failed — FS may be inconsistent. "
+                "code_a=%s code_b=%s stage=%d",
+                code_a,
+                code_b,
+                stage,
+            )
+        raise
+
+
+def _rename_files_in_folder(folder: str, old_code: str, new_code: str):
+    """Rename every bundle-{old_code}_* file in `folder` to bundle-{new_code}_*.
+    Used by _swap_bundles_on_disk. No rollback — the caller tracks stages.
+    """
+    prefix = f"bundle-{old_code}_"
+    new_prefix = f"bundle-{new_code}_"
+    for fn in os.listdir(folder):
+        if fn.startswith(prefix):
+            os.rename(
+                os.path.join(folder, fn),
+                os.path.join(folder, new_prefix + fn[len(prefix):]),
+            )
+
+
+def _delete_bundle_and_uploads(db: Session, code: str):
+    """Delete a bundle (DB + uploads folder) in one go. Used by the
+    overwrite path in create_bundle."""
+    crud.delete_bundle(db, code)
+    upload_folder = os.path.join(UPLOADS_DIR, code)
+    if os.path.exists(upload_folder):
+        shutil.rmtree(upload_folder, ignore_errors=True)
+
+
 # ---------- CREATE BUNDLE ----------
 @router.post("/", response_model=schemas.BundleOut)
-def create_bundle(bundle_in: schemas.BundleCreate, db: Session = Depends(get_db)):
+def create_bundle(
+    bundle_in: schemas.BundleCreate,
+    overwrite: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Create a new bundle. If `bundle_code` is already in use:
+      - `overwrite=false` (default): return 409 so the UI can prompt.
+      - `overwrite=true`: delete the existing bundle (DB row + items +
+        images + uploads folder), then create the new one.
+    """
+    existing = crud.get_bundle_by_code(db, bundle_in.bundle_code)
+    if existing and not overwrite:
+        # Structured detail so the frontend can surface a clear prompt
+        # and summarise what the admin is about to blow away.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "bundle_code_exists",
+                "message": f"Bundle {bundle_in.bundle_code} already exists",
+                "bundle_code": existing.bundle_code,
+                "bundle_name": existing.bundle_name,
+                "item_count": len(existing.items),
+                "image_count": len(existing.images),
+            },
+        )
+    if existing and overwrite:
+        _delete_bundle_and_uploads(db, existing.bundle_code)
     return crud.create_bundle(db, bundle_in.bundle_code, bundle_in.bundle_name)
 
 
@@ -398,33 +575,152 @@ def update_bundle(
     bundle_update: schemas.BundleUpdate,
     db: Session = Depends(get_db),
 ):
+    """Edit a bundle's name and/or code.
+
+    Code change strategy:
+      1. Short-circuit no-ops (code unchanged or empty).
+      2. Pre-check that the new code isn't already taken in the DB or on
+         disk. On collision, return 409 with a structured detail so the
+         UI can offer a Swap dialog.
+      3. Rename folder + files on disk first (has its own rollback).
+      4. Write bundle_code + every image_path to the DB as one commit.
+         If that commit fails, reverse the filesystem rename.
+    """
     bundle = crud.get_bundle_by_code(db, old_code)
     if not bundle:
         raise HTTPException(status_code=404, detail="Bundle not found")
 
-    # Update name if provided
+    # Update name if provided (independent of the code change).
     if bundle_update.bundle_name is not None:
         bundle.bundle_name = bundle_update.bundle_name or None
         db.commit()
         db.refresh(bundle)
 
-    # Update code if provided and different
     new_code = bundle_update.bundle_code
-    if new_code and new_code != old_code:
-        updated_bundle = crud.update_bundle_code(db, old_code, new_code)
-        if not updated_bundle:
-            raise HTTPException(status_code=404, detail="Bundle not found")
+    if not new_code or new_code == old_code:
+        return bundle
 
-        old_dir = os.path.join(UPLOADS_DIR, old_code)
-        new_dir = os.path.join(UPLOADS_DIR, new_code)
-        if os.path.exists(old_dir):
-            os.rename(old_dir, new_dir)
-            for img in updated_bundle.images:
-                img.image_path = img.image_path.replace(old_dir, new_dir)
-            db.commit()
-        bundle = updated_bundle
+    # Collision check — DB.
+    existing = crud.get_bundle_by_code(db, new_code)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "bundle_code_exists",
+                "message": f"Bundle {new_code} already exists",
+                "old_code": old_code,
+                "new_code": new_code,
+                "existing_bundle_code": existing.bundle_code,
+                "existing_bundle_name": existing.bundle_name,
+                "existing_item_count": len(existing.items),
+                "existing_image_count": len(existing.images),
+            },
+        )
+    # Collision check — filesystem. Shouldn't happen if DB is consistent,
+    # but defensive: a leftover folder with the target code must not be
+    # silently merged into.
+    new_dir = os.path.join(UPLOADS_DIR, new_code)
+    if os.path.exists(new_dir):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "upload_dir_exists",
+                "message": f"An upload directory for {new_code} exists on disk",
+            },
+        )
+
+    # Filesystem first (has rollback); then DB.
+    try:
+        _rename_bundle_on_disk(old_code, new_code)
+    except OSError as e:
+        logger.exception("Bundle rename FS step failed")
+        raise HTTPException(status_code=500, detail=f"Filesystem rename failed: {e}")
+
+    try:
+        bundle.bundle_code = new_code
+        for img in bundle.images:
+            img.image_path = _rewrite_image_path(img.image_path, old_code, new_code)
+        db.commit()
+        db.refresh(bundle)
+    except Exception:
+        # DB failed — reverse the rename so we don't drift.
+        try:
+            _rename_bundle_on_disk(new_code, old_code)
+        except Exception:
+            logger.exception(
+                "Rename rollback failed after DB error — FS may be inconsistent"
+            )
+        db.rollback()
+        raise
 
     return bundle
+
+
+# ---------- SWAP TWO BUNDLE CODES ----------
+@router.post("/{code_a}/swap/{code_b}", response_model=list[schemas.BundleOut])
+def swap_bundles(
+    code_a: str,
+    code_b: str,
+    db: Session = Depends(get_db),
+):
+    """Swap the bundle codes of two existing bundles. Moves folders and
+    renames files in one transaction-ish block; rolls everything back on
+    any failure so the DB and disk never diverge.
+
+    Returns both bundles in their post-swap state.
+    """
+    if code_a == code_b:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot swap a bundle with itself",
+        )
+
+    bundle_a = crud.get_bundle_by_code(db, code_a)
+    bundle_b = crud.get_bundle_by_code(db, code_b)
+    if not bundle_a or not bundle_b:
+        raise HTTPException(
+            status_code=404,
+            detail="One or both bundles not found",
+        )
+
+    # Step 1: swap folders + inside-file names.
+    try:
+        _swap_bundles_on_disk(code_a, code_b)
+    except OSError as e:
+        logger.exception("Bundle swap FS step failed")
+        raise HTTPException(status_code=500, detail=f"Filesystem swap failed: {e}")
+
+    # Step 2: swap codes in DB + rewrite image_paths, all in one commit.
+    # Use a temp sentinel code so the UNIQUE index is never violated
+    # mid-transaction.
+    temp_code = f"__swap_{uuid.uuid4().hex[:8]}__"
+    try:
+        bundle_a.bundle_code = temp_code
+        db.flush()
+        bundle_b.bundle_code = code_a
+        db.flush()
+        bundle_a.bundle_code = code_b
+        db.flush()
+        for img in bundle_a.images:
+            img.image_path = _rewrite_image_path(img.image_path, code_a, code_b)
+        for img in bundle_b.images:
+            img.image_path = _rewrite_image_path(img.image_path, code_b, code_a)
+        db.commit()
+        db.refresh(bundle_a)
+        db.refresh(bundle_b)
+    except Exception as e:
+        db.rollback()
+        # Put the filesystem back.
+        try:
+            _swap_bundles_on_disk(code_a, code_b)
+        except Exception:
+            logger.exception(
+                "Swap FS rollback failed — FS may be inconsistent"
+            )
+        logger.exception("Bundle swap DB step failed")
+        raise HTTPException(status_code=500, detail=f"Database swap failed: {e}")
+
+    return [bundle_a, bundle_b]
 
 
 # ---------- UPDATE ITEM ----------

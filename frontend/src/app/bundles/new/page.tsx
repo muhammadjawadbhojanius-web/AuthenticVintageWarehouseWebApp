@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Loader2 } from "lucide-react";
@@ -13,6 +13,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { MediaThumb } from "@/components/media-thumb";
 import { MediaPreviewOverlay, type PreviewItem } from "@/components/media-preview-overlay";
 import { useToast } from "@/components/toaster";
@@ -21,9 +22,12 @@ import {
   createBundle,
   addBundleItem,
   updateBundleStatus,
+  extractConflictDetail,
+  type BundleCodeExistsCreateError,
 } from "@/lib/queries";
 import { isVideoFilename } from "@/lib/media";
 import { useUploadQueue } from "@/contexts/upload-queue-context";
+import { useAuth } from "@/contexts/auth-context";
 import { MediaPicker } from "@/components/media-picker";
 
 interface DraftItem {
@@ -57,6 +61,10 @@ export default function NewBundlePage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const uploadQueue = useUploadQueue();
+  const { role } = useAuth();
+  // Only Admin + Content Creators may create bundles. Listing
+  // Executives get bounced so they can't reach this form by URL.
+  const canCreate = role === "Admin" || role === "Content Creators";
 
   const [media, setMedia] = useState<File[]>([]);
   const [bundleCode, setBundleCode] = useState("");
@@ -70,6 +78,11 @@ export default function NewBundlePage() {
     value: number; // 0..1
   } | null>(null);
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
+  // Overwrite-confirm state. When the user submits a form whose code
+  // already exists, we stash the conflict detail and open a dialog so
+  // the admin can decide whether to delete the existing bundle.
+  const [overwriteConflict, setOverwriteConflict] =
+    useState<BundleCodeExistsCreateError | null>(null);
 
   const previewUrls = useMemo(
     () => media.map((f) => ({ name: f.name, url: URL.createObjectURL(f), isVideo: isVideoFilename(f.name) })),
@@ -81,7 +94,14 @@ export default function NewBundlePage() {
     [previewUrls]
   );
 
-  if (!ready) {
+  // Kick non-creators back to the list once auth has hydrated.
+  useEffect(() => {
+    if (ready && !canCreate) {
+      router.replace("/bundles");
+    }
+  }, [ready, canCreate, router]);
+
+  if (!ready || !canCreate) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Spinner />
@@ -112,7 +132,9 @@ export default function NewBundlePage() {
     setItems((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const handleSubmit = async () => {
+  // Core submit flow, split out so we can call it from the overwrite
+  // confirmation button too.
+  const runSubmit = async ({ overwrite }: { overwrite: boolean }) => {
     setError(null);
     if (!bundleCode.trim()) {
       setError("Bundle code is required.");
@@ -127,12 +149,13 @@ export default function NewBundlePage() {
     try {
       // 1) Create bundle
       setProgress({ label: "Creating bundle…", value: 0.05 });
-      await createBundle(bundleCode.trim().toUpperCase(), bundleName.trim() || undefined);
+      const code = bundleCode.trim().toUpperCase();
+      await createBundle(code, bundleName.trim() || undefined, { overwrite });
 
       // 2) Items
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        await addBundleItem(bundleCode.trim().toUpperCase(), {
+        await addBundleItem(code, {
           gender: it.gender,
           brand: it.brand,
           article: it.article,
@@ -150,7 +173,6 @@ export default function NewBundlePage() {
 
       // 3) If there's any media, hand compression+upload off to the
       // background queue. Media-less bundles skip this entirely.
-      const code = bundleCode.trim().toUpperCase();
       if (media.length > 0) {
         uploadQueue.enqueue({
           bundleCode: code,
@@ -162,12 +184,26 @@ export default function NewBundlePage() {
       queryClient.invalidateQueries({ queryKey: ["bundles"] });
       router.replace("/bundles");
     } catch (e) {
+      // Bundle-code collision on the initial call: open the overwrite
+      // confirmation instead of spitting a raw error at the user.
+      const conflict = extractConflictDetail<BundleCodeExistsCreateError>(e);
+      if (conflict && conflict.code === "bundle_code_exists" && !overwrite) {
+        setOverwriteConflict(conflict);
+        return;
+      }
       const message = e instanceof Error ? e.message : String(e);
       setError(`Upload failed: ${message}`);
       toast({ title: "Upload failed", description: message, variant: "error" });
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleSubmit = () => runSubmit({ overwrite: false });
+
+  const handleConfirmOverwrite = async () => {
+    setOverwriteConflict(null);
+    await runSubmit({ overwrite: true });
   };
 
   return (
@@ -403,6 +439,58 @@ export default function NewBundlePage() {
           onClose={() => setPreviewIdx(null)}
         />
       )}
+
+      {/* Overwrite confirmation. Fires when the user submits a bundle
+          whose code is already taken. Agreeing wipes the existing bundle
+          (row + items + images + uploads folder) and retries the submit
+          against the freed code. */}
+      <Dialog
+        open={!!overwriteConflict}
+        onOpenChange={(v) => !v && setOverwriteConflict(null)}
+      >
+        <DialogContent onClose={() => setOverwriteConflict(null)}>
+          <DialogHeader>
+            <DialogTitle>Overwrite existing bundle?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Bundle{" "}
+            <span className="font-mono font-semibold">
+              {overwriteConflict?.bundle_code}
+            </span>{" "}
+            already exists
+            {overwriteConflict?.bundle_name ? (
+              <> (&ldquo;{overwriteConflict.bundle_name}&rdquo;)</>
+            ) : null}
+            . Overwriting will{" "}
+            <strong>permanently delete</strong> its{" "}
+            {overwriteConflict?.item_count ?? 0} item
+            {overwriteConflict?.item_count === 1 ? "" : "s"} and{" "}
+            {overwriteConflict?.image_count ?? 0} media file
+            {overwriteConflict?.image_count === 1 ? "" : "s"} before
+            creating the new one. This cannot be undone.
+          </p>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setOverwriteConflict(null)}
+              disabled={submitting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmOverwrite}
+              disabled={submitting}
+            >
+              {submitting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                "Overwrite"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

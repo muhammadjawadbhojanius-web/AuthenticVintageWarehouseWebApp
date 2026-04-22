@@ -1,6 +1,45 @@
 import { api } from "./api";
 import type { Bundle, User } from "./types";
 
+// ---------------------------------------------------------------------------
+// Structured error shapes returned by the backend.
+// ---------------------------------------------------------------------------
+
+export interface BundleCodeExistsCreateError {
+  code: "bundle_code_exists";
+  message: string;
+  bundle_code: string;
+  bundle_name: string | null;
+  item_count: number;
+  image_count: number;
+}
+
+export interface BundleCodeExistsUpdateError {
+  code: "bundle_code_exists";
+  message: string;
+  old_code: string;
+  new_code: string;
+  existing_bundle_code: string;
+  existing_bundle_name: string | null;
+  existing_item_count: number;
+  existing_image_count: number;
+}
+
+/**
+ * Returns the structured `detail` object when the server responds with a
+ * 409 Conflict. Returns null for anything else, so callers can default to
+ * their existing generic error path.
+ */
+export function extractConflictDetail<T = unknown>(err: unknown): T | null {
+  const e = err as {
+    response?: { status?: number; data?: { detail?: unknown } };
+  };
+  if (e?.response?.status !== 409) return null;
+  const detail = e.response.data?.detail;
+  if (!detail || typeof detail !== "object") return null;
+  return detail as T;
+}
+
 // Bundles
 export async function fetchBundles(search?: string): Promise<Bundle[]> {
   const url = search ? `/bundles/?search=${encodeURIComponent(search)}` : "/bundles/";
@@ -21,11 +60,28 @@ export async function fetchBundle(code: string): Promise<Bundle> {
   return res.data;
 }
 
-export async function createBundle(bundleCode: string, bundleName?: string) {
-  const res = await api().post<Bundle>("/bundles/", {
+export async function createBundle(
+  bundleCode: string,
+  bundleName?: string,
+  opts: { overwrite?: boolean } = {},
+) {
+  const url = opts.overwrite ? "/bundles/?overwrite=true" : "/bundles/";
+  const res = await api().post<Bundle>(url, {
     bundle_code: bundleCode,
     bundle_name: bundleName || null,
   });
+  return res.data;
+}
+
+/**
+ * Atomically swap the codes (and uploads folders + file names + DB paths)
+ * of two existing bundles. Used when the admin hits a collision while
+ * editing a code and opts to swap instead of cancel.
+ */
+export async function swapBundles(codeA: string, codeB: string): Promise<Bundle[]> {
+  const res = await api().post<Bundle[]>(
+    `/bundles/${encodeURIComponent(codeA)}/swap/${encodeURIComponent(codeB)}`,
+  );
   return res.data;
 }
 
@@ -37,7 +93,8 @@ export async function updateBundleStatus(bundleCode: string, status: string) {
   await api().patch(`/bundles/${encodeURIComponent(bundleCode)}/status`, { status });
 }
 
-export async function updateBundlePosted(bundleCode: string, posted: boolean) {
+export async function updateBundlePosted(bundleCode: string, posted: number) {
+  // posted: 0 = draft, 1 = posted, 2 = sold
   await api().patch(`/bundles/${encodeURIComponent(bundleCode)}/posted`, { posted });
 }
 

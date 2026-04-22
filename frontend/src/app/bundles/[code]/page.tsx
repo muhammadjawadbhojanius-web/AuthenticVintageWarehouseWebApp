@@ -37,6 +37,9 @@ import {
   addBundleItem,
   updateBundleItem,
   updateBundle,
+  swapBundles,
+  extractConflictDetail,
+  type BundleCodeExistsUpdateError,
 } from "@/lib/queries";
 import { mediaUrlFor, isVideoFilename } from "@/lib/media";
 import { mediaStatusLabel } from "@/lib/media-status";
@@ -79,6 +82,12 @@ export default function BundleDetailPage() {
   const [editBundleName, setEditBundleName] = useState("");
   const [editBundleError, setEditBundleError] = useState<string | null>(null);
   const [editBundleSaving, setEditBundleSaving] = useState(false);
+  // Swap-confirm state. Populated when the admin tries to rename a
+  // bundle to a code that already belongs to another bundle — the user
+  // can opt to swap the two bundles' codes instead of aborting.
+  const [swapConflict, setSwapConflict] =
+    useState<BundleCodeExistsUpdateError | null>(null);
+  const [swapping, setSwapping] = useState(false);
 
   // Copy-to-clipboard state
   const [copying, setCopying] = useState(false);
@@ -152,6 +161,7 @@ export default function BundleDetailPage() {
       return;
     }
     setEditBundleSaving(true);
+    setEditBundleError(null);
     try {
       const payload: { bundle_code?: string; bundle_name?: string } = {};
       if (editBundleCode.trim().toUpperCase() !== code) {
@@ -174,10 +184,49 @@ export default function BundleDetailPage() {
         refreshBundle();
       }
       setEditBundleOpen(false);
-    } catch {
-      setEditBundleError("Failed to update bundle.");
+    } catch (e) {
+      // Bundle-code collision → offer the swap dialog instead of a
+      // generic "Failed to update bundle" message.
+      const conflict = extractConflictDetail<BundleCodeExistsUpdateError>(e);
+      if (conflict && conflict.code === "bundle_code_exists") {
+        setSwapConflict(conflict);
+        setEditBundleOpen(false);
+      } else {
+        setEditBundleError("Failed to update bundle.");
+      }
     } finally {
       setEditBundleSaving(false);
+    }
+  };
+
+  const handleConfirmSwap = async () => {
+    if (!swapConflict) return;
+    setSwapping(true);
+    try {
+      await swapBundles(swapConflict.old_code, swapConflict.new_code);
+      toast({
+        title: `Swapped ${swapConflict.old_code} ↔ ${swapConflict.new_code}`,
+        variant: "success",
+      });
+      // Every view that might still reference either code needs to
+      // refetch — the list page, both detail queries, and the download
+      // metadata cache.
+      queryClient.invalidateQueries({ queryKey: ["bundles"] });
+      queryClient.invalidateQueries({ queryKey: ["bundle", swapConflict.old_code] });
+      queryClient.invalidateQueries({ queryKey: ["bundle", swapConflict.new_code] });
+      setSwapConflict(null);
+      // We were viewing the old code; that bundle now holds the new
+      // code. Navigate so the URL matches what the user sees.
+      router.replace(`/bundles/${encodeURIComponent(swapConflict.new_code)}`);
+    } catch {
+      toast({
+        title: "Swap failed",
+        description:
+          "Could not swap the bundle codes. The original state has been restored.",
+        variant: "error",
+      });
+    } finally {
+      setSwapping(false);
     }
   };
 
@@ -513,6 +562,73 @@ export default function BundleDetailPage() {
             </Button>
             <Button onClick={handleSaveBundle} disabled={editBundleSaving}>
               {editBundleSaving ? <Spinner className="h-4 w-4" /> : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Swap-codes confirmation. Fires when the admin tries to rename
+          a bundle to a code that's already in use — offers to swap the
+          two bundles' codes (folders, file names, and DB rows) in one
+          atomic server operation. */}
+      <Dialog
+        open={!!swapConflict}
+        onOpenChange={(v) => !v && !swapping && setSwapConflict(null)}
+      >
+        <DialogContent
+          onClose={swapping ? undefined : () => setSwapConflict(null)}
+        >
+          <DialogHeader>
+            <DialogTitle>Swap bundle codes?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Bundle{" "}
+              <span className="font-mono font-semibold">
+                {swapConflict?.new_code}
+              </span>{" "}
+              already exists
+              {swapConflict?.existing_bundle_name
+                ? ` (“${swapConflict.existing_bundle_name}”)`
+                : null}
+              . Would you like to swap the two bundles&rsquo; codes?
+            </p>
+            <div className="rounded-md border bg-muted/30 p-3 text-xs font-mono">
+              <div>
+                <span className="text-muted-foreground">this bundle:</span>{" "}
+                <span className="font-semibold">{swapConflict?.old_code}</span>{" "}
+                <span className="text-muted-foreground">→</span>{" "}
+                <span className="font-semibold">{swapConflict?.new_code}</span>
+              </div>
+              <div className="mt-1">
+                <span className="text-muted-foreground">other bundle:</span>{" "}
+                <span className="font-semibold">{swapConflict?.new_code}</span>{" "}
+                <span className="text-muted-foreground">→</span>{" "}
+                <span className="font-semibold">{swapConflict?.old_code}</span>
+              </div>
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                ({swapConflict?.existing_item_count ?? 0} item
+                {swapConflict?.existing_item_count === 1 ? "" : "s"},{" "}
+                {swapConflict?.existing_image_count ?? 0} media file
+                {swapConflict?.existing_image_count === 1 ? "" : "s"} live on
+                the other bundle)
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Folders, file names, and database paths move together — nothing
+              is lost.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setSwapConflict(null)}
+              disabled={swapping}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmSwap} disabled={swapping}>
+              {swapping ? <Spinner className="h-4 w-4" /> : "Swap codes"}
             </Button>
           </DialogFooter>
         </DialogContent>
