@@ -21,7 +21,7 @@
     "{comments}"
   ],
   "header": "Bundle Code: {bundle_code}\nBundle Name: {bundle_name}\n\nItems ({item_count}):",
-  "item": "  {n}. {brand} — {article}\n     {gender} | Qty: {number_of_pieces} | Grade: {grade} | Sizes: {size_variation}\n     Notes: {comments}",
+  "item": "  {n}. {brand} - {article}\n     {gender} | Qty: {number_of_pieces} | Grade: {grade} | Sizes: {size_variation}\n     Notes: {comments}",
   "item_separator": "\n\n",
   "footer": "\nTotal Number Of Pieces: {total_pieces}"
 }
