@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   Users,
   Terminal,
+  PackageSearch,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -166,10 +167,39 @@ export default function DeveloperPage() {
           </CardContent>
         </Card>
 
-        {/* Shortcuts */}
+        {/* Dev-only features.
+            Convention: every feature gated on `isDeveloper` gets a tile
+            here, with a DEV pill so it reads as "not yet shipped to
+            everyone". That makes this page the single canonical index
+            of what's live behind the developer flag — add a tile
+            whenever a new flag is introduced. */}
         <Card>
           <CardContent className="space-y-2 pt-6">
-            <h2 className="font-semibold">Shortcuts</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="font-semibold">Developer-only features</h2>
+              <span className="rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-warning">
+                Dev
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Features currently gated behind <span className="font-mono">isDeveloper</span>.
+              Not yet visible to other roles.
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <DevShortcut
+                icon={<PackageSearch className="h-5 w-5 text-primary" />}
+                title="Stock Report"
+                subtitle="Brand / article piece counts across non-sold bundles"
+                onClick={() => router.push("/admin/stock")}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Admin shortcuts — not dev-only, just handy from here. */}
+        <Card>
+          <CardContent className="space-y-2 pt-6">
+            <h2 className="font-semibold">Admin tools</h2>
             <div className="grid gap-2 sm:grid-cols-2">
               <button
                 type="button"
@@ -202,5 +232,41 @@ export default function DeveloperPage() {
         </Card>
       </div>
     </div>
+  );
+}
+
+/**
+ * Shortcut tile for a developer-only feature. Matches the Admin Tools
+ * tiles but adds a small DEV pill so the distinction is obvious at a
+ * glance.
+ */
+function DevShortcut({
+  icon,
+  title,
+  subtitle,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-center gap-3 rounded-md border p-3 text-left transition-colors hover:bg-accent"
+    >
+      {icon}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <p className="truncate text-sm font-medium">{title}</p>
+          <span className="rounded-sm bg-warning/15 px-1 text-[9px] font-bold uppercase tracking-wide text-warning">
+            Dev
+          </span>
+        </div>
+        <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
+      </div>
+    </button>
   );
 }
