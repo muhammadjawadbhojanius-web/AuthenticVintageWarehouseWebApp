@@ -211,6 +211,7 @@ export interface StockRowBrand {
   gift: number;
   total: number;
   bundle_count: number;
+  bundle_codes: string[];
 }
 export interface StockRowArticle {
   article: string;
@@ -218,6 +219,7 @@ export interface StockRowArticle {
   gift: number;
   total: number;
   bundle_count: number;
+  bundle_codes: string[];
 }
 export interface StockRowCombined {
   brand: string;
@@ -226,6 +228,7 @@ export interface StockRowCombined {
   gift: number;
   total: number;
   bundle_count: number;
+  bundle_codes: string[];
 }
 export interface StockReport {
   by_brand: StockRowBrand[];
@@ -234,8 +237,12 @@ export interface StockReport {
   totals: { bundles: number; pieces: number; gift: number; total: number };
 }
 
-export async function fetchStockReport(): Promise<StockReport> {
-  const res = await api().get<StockReport>("/bundles/stock");
+export async function fetchStockReport(
+  prefix?: "AV" | "AVG",
+): Promise<StockReport> {
+  const res = await api().get<StockReport>("/bundles/stock", {
+    params: prefix ? { prefix } : undefined,
+  });
   return res.data;
 }
 

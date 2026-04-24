@@ -230,27 +230,44 @@ def read_bundles(
 # values and the sellable + gift pieces are divided equally across the
 # split values, so a brand="Nike, Adidas" / pieces=10 item contributes
 # 5 to each brand instead of 10.
+#
+# Aggregation is case-insensitive: "T-Shirts" and "T-shirts" collapse to
+# a single row. The label uses whichever casing was seen first.
 @router.get("/stock")
-def stock_report(db: Session = Depends(get_db)):
+def stock_report(
+    prefix: str = None,
+    db: Session = Depends(get_db),
+):
     from collections import defaultdict
     from sqlalchemy.orm import selectinload as _selectinload
 
-    bundles = (
+    query = (
         db.query(models.Bundle)
         .options(_selectinload(models.Bundle.items))
         .filter(models.Bundle.posted != 2)
-        .all()
     )
 
-    # Three aggregation buckets. Value is {"pieces": float, "gift": float,
-    # "bundles": set[str]} — bundle set is deduped at aggregation time and
-    # its size becomes the `bundle_count` column.
+    if prefix:
+        import re as _re
+        safe_prefix = _re.sub(r"[^A-Za-z0-9]", "", prefix)
+        if safe_prefix:
+            query = query.filter(models.Bundle.bundle_code.like(f"{safe_prefix}-%"))
+
+    bundles = query.all()
+
+    # Three aggregation buckets. Keys are casefolded for case-insensitive
+    # matching; `display` holds the first-seen casing for the label.
+    # Value is {"display": str, "pieces": float, "gift": float,
+    # "bundles": set[str]}.
     def _bucket():
-        return {"pieces": 0.0, "gift": 0.0, "bundles": set()}
+        return {"display": "", "pieces": 0.0, "gift": 0.0, "bundles": set()}
+
+    def _combo_bucket():
+        return {"brand": "", "article": "", "pieces": 0.0, "gift": 0.0, "bundles": set()}
 
     by_brand: "defaultdict[str, dict]" = defaultdict(_bucket)
     by_article: "defaultdict[str, dict]" = defaultdict(_bucket)
-    by_combo: "defaultdict[tuple[str, str], dict]" = defaultdict(_bucket)
+    by_combo: "defaultdict[tuple[str, str], dict]" = defaultdict(_combo_bucket)
 
     # Grand totals computed from the raw item values so they aren't
     # affected by rounding on the splits.
@@ -279,35 +296,55 @@ def stock_report(db: Session = Depends(get_db)):
             combo_gift_share = gift / (len(brands) * len(articles))
 
             for b in brands:
-                by_brand[b]["pieces"] += brand_pieces_share
-                by_brand[b]["gift"] += brand_gift_share
-                by_brand[b]["bundles"].add(bundle.bundle_code)
+                key = b.casefold()
+                bucket = by_brand[key]
+                if not bucket["display"]:
+                    bucket["display"] = b
+                bucket["pieces"] += brand_pieces_share
+                bucket["gift"] += brand_gift_share
+                bucket["bundles"].add(bundle.bundle_code)
             for a in articles:
-                by_article[a]["pieces"] += article_pieces_share
-                by_article[a]["gift"] += article_gift_share
-                by_article[a]["bundles"].add(bundle.bundle_code)
+                key = a.casefold()
+                bucket = by_article[key]
+                if not bucket["display"]:
+                    bucket["display"] = a
+                bucket["pieces"] += article_pieces_share
+                bucket["gift"] += article_gift_share
+                bucket["bundles"].add(bundle.bundle_code)
             for b in brands:
                 for a in articles:
-                    by_combo[(b, a)]["pieces"] += combo_pieces_share
-                    by_combo[(b, a)]["gift"] += combo_gift_share
-                    by_combo[(b, a)]["bundles"].add(bundle.bundle_code)
+                    key = (b.casefold(), a.casefold())
+                    bucket = by_combo[key]
+                    if not bucket["brand"]:
+                        bucket["brand"] = b
+                    if not bucket["article"]:
+                        bucket["article"] = a
+                    bucket["pieces"] += combo_pieces_share
+                    bucket["gift"] += combo_gift_share
+                    bucket["bundles"].add(bundle.bundle_code)
 
     def _row_extra(data):
         pieces = round(data["pieces"], 2)
         gift = round(data["gift"], 2)
+        # Ship the actual bundle codes so the UI can union across the
+        # currently-visible rows and show a true unique-bundle count that
+        # reacts to search. `bundle_count` stays for any caller that only
+        # needs the number.
+        codes = sorted(data["bundles"])
         return {
             "pieces": pieces,
             "gift": gift,
             "total": round(pieces + gift, 2),
-            "bundle_count": len(data["bundles"]),
+            "bundle_count": len(codes),
+            "bundle_codes": codes,
         }
 
     return {
-        "by_brand": [{"brand": k, **_row_extra(v)} for k, v in by_brand.items()],
-        "by_article": [{"article": k, **_row_extra(v)} for k, v in by_article.items()],
+        "by_brand": [{"brand": v["display"], **_row_extra(v)} for v in by_brand.values()],
+        "by_article": [{"article": v["display"], **_row_extra(v)} for v in by_article.values()],
         "combined": [
-            {"brand": k[0], "article": k[1], **_row_extra(v)}
-            for k, v in by_combo.items()
+            {"brand": v["brand"], "article": v["article"], **_row_extra(v)}
+            for v in by_combo.values()
         ],
         "totals": {
             "bundles": len(bundles),

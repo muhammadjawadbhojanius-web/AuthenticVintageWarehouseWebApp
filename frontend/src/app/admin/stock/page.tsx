@@ -12,6 +12,7 @@ import {
   ArrowUp,
   ArrowDown,
   X,
+  Download,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { Button } from "@/components/ui/button";
@@ -39,7 +40,8 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 
 type Tab = "brand" | "article" | "combined";
-type SortKey = "key" | "pieces" | "gift" | "total" | "bundle_count";
+type PrefixFilter = "all" | "AV" | "AVG";
+type SortKey = "key" | "pieces" | "gift" | "total";
 type SortDir = "asc" | "desc";
 
 interface Row {
@@ -52,7 +54,10 @@ interface Row {
   pieces: number;
   gift: number;
   total: number;
-  bundle_count: number;
+  // Carried through so the dashboard can union across visible rows for
+  // an accurate unique-bundle count (a bundle with Sweatshirts + Hoodies
+  // shouldn't be counted twice).
+  bundleCodes: string[];
 }
 
 function buildRows(data: StockReport, tab: Tab): Row[] {
@@ -63,7 +68,7 @@ function buildRows(data: StockReport, tab: Tab): Row[] {
       pieces: r.pieces,
       gift: r.gift,
       total: r.total,
-      bundle_count: r.bundle_count,
+      bundleCodes: r.bundle_codes,
     }));
   }
   if (tab === "article") {
@@ -73,7 +78,7 @@ function buildRows(data: StockReport, tab: Tab): Row[] {
       pieces: r.pieces,
       gift: r.gift,
       total: r.total,
-      bundle_count: r.bundle_count,
+      bundleCodes: r.bundle_codes,
     }));
   }
   return data.combined.map((r) => ({
@@ -83,7 +88,7 @@ function buildRows(data: StockReport, tab: Tab): Row[] {
     pieces: r.pieces,
     gift: r.gift,
     total: r.total,
-    bundle_count: r.bundle_count,
+    bundleCodes: r.bundle_codes,
   }));
 }
 
@@ -91,6 +96,27 @@ function formatNumber(n: number): string {
   // Drop trailing zeros on fractional values.
   const rounded = Math.round(n * 100) / 100;
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+// Minimal RFC-4180-ish CSV escape: wrap in quotes if the field contains
+// a comma, quote, or newline; double up any embedded quotes.
+function csvCell(value: string | number): string {
+  const s = String(value);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function downloadCsv(filename: string, rows: (string | number)[][]) {
+  const body = rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
+  // BOM keeps Excel happy with non-ASCII brand names.
+  const blob = new Blob(["﻿", body], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 export default function StockReportPage() {
@@ -104,13 +130,15 @@ export default function StockReportPage() {
   }, [ready, isDeveloper, router]);
 
   const [tab, setTab] = useState<Tab>("brand");
+  const [prefixFilter, setPrefixFilter] = useState<PrefixFilter>("all");
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("pieces");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const stockQuery = useQuery({
-    queryKey: ["stock-report"],
-    queryFn: fetchStockReport,
+    queryKey: ["stock-report", prefixFilter],
+    queryFn: () =>
+      fetchStockReport(prefixFilter === "all" ? undefined : prefixFilter),
     enabled: ready && isDeveloper,
   });
 
@@ -145,6 +173,48 @@ export default function StockReportPage() {
     }
   };
 
+  // Filter-reactive dashboard figures — everything above the table reads
+  // from these, so it matches exactly what the user is looking at.
+  const summary = useMemo(() => {
+    const codes = new Set<string>();
+    let pieces = 0;
+    let gift = 0;
+    let total = 0;
+    for (const r of rows) {
+      pieces += r.pieces;
+      gift += r.gift;
+      total += r.total;
+      for (const c of r.bundleCodes) codes.add(c);
+    }
+    return { bundles: codes.size, rowCount: rows.length, pieces, gift, total };
+  }, [rows]);
+
+  // Exports whatever the user is currently seeing: active tab, prefix
+  // filter, search, and sort all baked in.
+  const handleExport = () => {
+    if (rows.length === 0) return;
+    const header: string[] =
+      tab === "combined"
+        ? ["Brand", "Article", "Sellable", "Gift", "Total"]
+        : [tab === "brand" ? "Brand" : "Article", "Sellable", "Gift", "Total"];
+
+    const body: (string | number)[][] = rows.map((r) =>
+      tab === "combined"
+        ? [r.primary, r.secondary ?? "", r.pieces, r.gift, r.total]
+        : [r.primary, r.pieces, r.gift, r.total],
+    );
+
+    const totalsRow: (string | number)[] = tab === "combined"
+      ? [search ? "Filtered rows" : "All rows", "", summary.pieces, summary.gift, summary.total]
+      : [search ? "Filtered rows" : "All rows", summary.pieces, summary.gift, summary.total];
+
+    const date = new Date().toISOString().slice(0, 10);
+    const parts = ["stock", tab, prefixFilter === "all" ? null : prefixFilter, date]
+      .filter(Boolean)
+      .join("-");
+    downloadCsv(`${parts}.csv`, [header, ...body, totalsRow]);
+  };
+
   if (!ready || !isDeveloper) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -152,8 +222,6 @@ export default function StockReportPage() {
       </div>
     );
   }
-
-  const totals = stockQuery.data?.totals;
 
   return (
     <div className="min-h-screen">
@@ -170,8 +238,18 @@ export default function StockReportPage() {
           </span>
           <Button
             variant="outline"
-            size="icon"
+            size="sm"
             className="ml-auto"
+            disabled={!stockQuery.isSuccess || rows.length === 0}
+            onClick={handleExport}
+            title="Export current view to CSV"
+          >
+            <Download className="mr-1.5 h-4 w-4" />
+            Export
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
             disabled={stockQuery.isFetching}
             onClick={() => stockQuery.refetch()}
             title="Refresh"
@@ -193,13 +271,21 @@ export default function StockReportPage() {
           values.
         </p>
 
-        {/* Summary cards — raw totals from the backend, no splitting. */}
-        {totals && (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <SummaryStat label="Bundles" value={totals.bundles} />
-            <SummaryStat label="Sellable" value={totals.pieces} />
-            <SummaryStat label="Gift" value={totals.gift} />
-            <SummaryStat label="Total pcs" value={totals.total} />
+        {/* Dashboard — reacts to tab + prefix + search. Bundles is a
+            true unique count (union of bundle codes across visible rows)
+            so a bundle with multiple articles doesn't inflate the total. */}
+        {stockQuery.isSuccess && (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <SummaryStat label="Bundles" value={summary.bundles} />
+            <SummaryStat
+              label={
+                tab === "brand" ? "Brands" : tab === "article" ? "Articles" : "Pairs"
+              }
+              value={summary.rowCount}
+            />
+            <SummaryStat label="Sellable" value={summary.pieces} />
+            <SummaryStat label="Gift" value={summary.gift} />
+            <SummaryStat label="Total pcs" value={summary.total} />
           </div>
         )}
 
@@ -213,6 +299,29 @@ export default function StockReportPage() {
           </TabButton>
           <TabButton active={tab === "combined"} onClick={() => setTab("combined")}>
             Brand × Article
+          </TabButton>
+        </div>
+
+        {/* Prefix filter — mirrors the AV / AVG segmented control on the
+            bundles list so the same subset can be aggregated here. */}
+        <div className="grid grid-cols-3 gap-2">
+          <TabButton
+            active={prefixFilter === "all"}
+            onClick={() => setPrefixFilter("all")}
+          >
+            All prefixes
+          </TabButton>
+          <TabButton
+            active={prefixFilter === "AV"}
+            onClick={() => setPrefixFilter("AV")}
+          >
+            AV-
+          </TabButton>
+          <TabButton
+            active={prefixFilter === "AVG"}
+            onClick={() => setPrefixFilter("AVG")}
+          >
+            AVG-
           </TabButton>
         </div>
 
@@ -299,13 +408,6 @@ export default function StockReportPage() {
                       dir={sortDir}
                       onToggle={toggleSort}
                     />
-                    <ThButton
-                      label="Bundles"
-                      sortKey="bundle_count"
-                      active={sortKey}
-                      dir={sortDir}
-                      onToggle={toggleSort}
-                    />
                   </tr>
                 </thead>
                 <tbody>
@@ -329,34 +431,9 @@ export default function StockReportPage() {
                       <td className="px-3 py-2 text-right font-semibold tabular-nums">
                         {formatNumber(r.total)}
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                        {r.bundle_count}
-                      </td>
                     </tr>
                   ))}
                 </tbody>
-                {totals && rows.length > 0 && (
-                  <tfoot className="sticky bottom-0 z-10 bg-muted/50 backdrop-blur">
-                    <tr className="border-t font-semibold">
-                      <td className="px-3 py-2">
-                        {search ? "Filtered rows" : "All rows"}
-                      </td>
-                      {tab === "combined" && <td />}
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {formatNumber(rows.reduce((s, r) => s + r.pieces, 0))}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {formatNumber(rows.reduce((s, r) => s + r.gift, 0))}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {formatNumber(rows.reduce((s, r) => s + r.total, 0))}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {rows.reduce((s, r) => s + r.bundle_count, 0)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                )}
               </table>
             </div>
           </Card>
