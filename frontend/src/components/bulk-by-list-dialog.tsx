@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ClipboardList, Loader2 } from "lucide-react";
+import { AlertTriangle, ClipboardList, Loader2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -97,10 +97,21 @@ export function BulkByListDialog({
     }
   };
 
+  // Strips the codes the server flagged as missing from the textarea so the
+  // user can hit Continue again on a clean list. Re-serialised newline-per-
+  // code for readability.
+  const removeMissingFromList = () => {
+    if (missing.length === 0) return;
+    const dropped = new Set(missing);
+    const kept = codes.filter((c) => !dropped.has(c));
+    setText(kept.join("\n"));
+    setMissing([]);
+  };
+
   return (
     <Dialog open={open} onOpenChange={(v) => !validating && onOpenChange(v)}>
       <DialogContent
-        className="max-w-xl"
+        className="max-w-xl max-h-[calc(100dvh-2rem)]"
         onClose={validating ? undefined : () => onOpenChange(false)}
       >
         <DialogHeader>
@@ -114,116 +125,136 @@ export function BulkByListDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-2">
-          <Textarea
-            value={text}
-            onChange={(e) => {
-              setText(e.target.value);
-              // Editing clears the missing-flag so Continue can re-arm.
-              if (missing.length > 0) setMissing([]);
-            }}
-            placeholder="AV-0001, AV-0002&#10;AVG-0003"
-            rows={8}
-            className="font-mono text-sm"
-            disabled={validating}
-            spellCheck={false}
-          />
+        {/* Scrollable middle so a huge missing-codes list can never push the
+            footer off-screen. Header and footer stay pinned. */}
+        <div className="-mx-1 flex-1 min-h-0 space-y-4 overflow-y-auto px-1">
+          <div className="space-y-2">
+            <Textarea
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                // Editing clears the missing-flag so Continue can re-arm.
+                if (missing.length > 0) setMissing([]);
+              }}
+              placeholder="AV-0001, AV-0002&#10;AVG-0003"
+              rows={6}
+              className="font-mono text-sm"
+              disabled={validating}
+              spellCheck={false}
+            />
 
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>
-              {codes.length === 0
-                ? "No codes yet"
-                : `${codes.length} code${codes.length === 1 ? "" : "s"} recognized`}
-            </span>
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>
+                {codes.length === 0
+                  ? "No codes yet"
+                  : `${codes.length} code${codes.length === 1 ? "" : "s"} recognized`}
+              </span>
+            </div>
+
+            {previewCodes.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {previewCodes.map((c) => {
+                  const isMissing = missing.includes(c);
+                  return (
+                    <span
+                      key={c}
+                      className={cn(
+                        "rounded border px-1.5 py-0.5 font-mono text-[11px]",
+                        isMissing
+                          ? "border-destructive/60 bg-destructive/10 text-destructive"
+                          : "border-border bg-muted/50",
+                      )}
+                    >
+                      {c}
+                    </span>
+                  );
+                })}
+                {overflow > 0 && (
+                  <span className="rounded border border-dashed border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                    +{overflow} more
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
-          {previewCodes.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {previewCodes.map((c) => {
-                const isMissing = missing.includes(c);
-                return (
-                  <span
-                    key={c}
-                    className={cn(
-                      "rounded border px-1.5 py-0.5 font-mono text-[11px]",
-                      isMissing
-                        ? "border-destructive/60 bg-destructive/10 text-destructive"
-                        : "border-border bg-muted/50",
-                    )}
-                  >
-                    {c}
-                  </span>
-                );
-              })}
-              {overflow > 0 && (
-                <span className="rounded border border-dashed border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                  +{overflow} more
-                </span>
-              )}
+          {missing.length > 0 && (
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-semibold">
+                  <AlertTriangle className="h-4 w-4" />
+                  Not found in database ({missing.length})
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 border-destructive/50 bg-background text-destructive hover:bg-destructive/10"
+                  onClick={removeMissingFromList}
+                >
+                  <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                  Remove from list
+                </Button>
+              </div>
+              <p className="mt-1 text-xs">
+                Click <strong>Remove from list</strong> to keep only the codes
+                that exist, or edit the textarea to fix typos.
+              </p>
+              {/* Inner scroll so even a 200-code rejection list stays
+                  bounded and never crowds out the action selector below. */}
+              <div className="mt-2 max-h-32 overflow-y-auto rounded border border-destructive/30 bg-background/40 p-1.5">
+                <div className="flex flex-wrap gap-1">
+                  {missing.map((c) => (
+                    <span
+                      key={c}
+                      className="rounded border border-destructive/60 bg-destructive/10 px-1.5 py-0.5 font-mono text-[11px]"
+                    >
+                      {c}
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
-        </div>
 
-        {missing.length > 0 && (
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
-            <div className="flex items-center gap-2 font-semibold">
-              <AlertTriangle className="h-4 w-4" />
-              Not found in database ({missing.length})
-            </div>
-            <p className="mt-1 text-xs">
-              Remove or correct these codes — the action won&rsquo;t run until
-              every code matches an existing bundle.
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Action
             </p>
-            <div className="mt-2 flex flex-wrap gap-1">
-              {missing.map((c) => (
-                <span
-                  key={c}
-                  className="rounded border border-destructive/60 bg-destructive/10 px-1.5 py-0.5 font-mono text-[11px]"
-                >
-                  {c}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Action
-          </p>
-          <div
-            className={cn(
-              "grid gap-2",
-              canDelete ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3",
-            )}
-          >
-            <ActionTile
-              label="Draft"
-              active={action?.kind === "status" && action.target === 0}
-              onClick={() => setAction({ kind: "status", target: 0 })}
-              disabled={validating}
-            />
-            <ActionTile
-              label="Posted"
-              active={action?.kind === "status" && action.target === 1}
-              onClick={() => setAction({ kind: "status", target: 1 })}
-              disabled={validating}
-            />
-            <ActionTile
-              label="Sold"
-              active={action?.kind === "status" && action.target === 2}
-              onClick={() => setAction({ kind: "status", target: 2 })}
-              disabled={validating}
-            />
-            {canDelete && (
+            <div
+              className={cn(
+                "grid gap-2",
+                canDelete ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3",
+              )}
+            >
               <ActionTile
-                label="Delete"
-                tone="destructive"
-                active={action?.kind === "delete"}
-                onClick={() => setAction({ kind: "delete" })}
+                label="Draft"
+                active={action?.kind === "status" && action.target === 0}
+                onClick={() => setAction({ kind: "status", target: 0 })}
                 disabled={validating}
               />
-            )}
+              <ActionTile
+                label="Posted"
+                active={action?.kind === "status" && action.target === 1}
+                onClick={() => setAction({ kind: "status", target: 1 })}
+                disabled={validating}
+              />
+              <ActionTile
+                label="Sold"
+                active={action?.kind === "status" && action.target === 2}
+                onClick={() => setAction({ kind: "status", target: 2 })}
+                disabled={validating}
+              />
+              {canDelete && (
+                <ActionTile
+                  label="Delete"
+                  tone="destructive"
+                  active={action?.kind === "delete"}
+                  onClick={() => setAction({ kind: "delete" })}
+                  disabled={validating}
+                />
+              )}
+            </div>
           </div>
         </div>
 
