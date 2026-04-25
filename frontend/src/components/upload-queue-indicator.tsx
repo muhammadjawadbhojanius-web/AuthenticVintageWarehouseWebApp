@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { CheckCircle2, Loader2, X, AlertCircle, CloudUpload } from "lucide-react";
+import { CheckCircle2, Loader2, X, AlertCircle, CloudUpload, RotateCw } from "lucide-react";
 import { useUploadQueue, type UploadTask } from "@/contexts/upload-queue-context";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
  * listing all tasks in flight. Hidden entirely when the queue is empty.
  */
 export function UploadQueueIndicator() {
-  const { tasks, dismiss } = useUploadQueue();
+  const { tasks, dismiss, cancel, retry } = useUploadQueue();
   const [open, setOpen] = React.useState(false);
   const panelRef = React.useRef<HTMLDivElement | null>(null);
   const buttonRef = React.useRef<HTMLButtonElement | null>(null);
@@ -67,7 +67,13 @@ export function UploadQueueIndicator() {
           </div>
           <div className="max-h-[60vh] overflow-y-auto">
             {tasks.map((t) => (
-              <TaskRow key={t.id} task={t} onDismiss={() => dismiss(t.id)} />
+              <TaskRow
+                key={t.id}
+                task={t}
+                onDismiss={() => dismiss(t.id)}
+                onCancel={() => void cancel(t.id)}
+                onRetry={() => retry(t.id)}
+              />
             ))}
           </div>
         </div>
@@ -76,7 +82,21 @@ export function UploadQueueIndicator() {
   );
 }
 
-function TaskRow({ task, onDismiss }: { task: UploadTask; onDismiss: () => void }) {
+function TaskRow({
+  task,
+  onDismiss,
+  onCancel,
+  onRetry,
+}: {
+  task: UploadTask;
+  onDismiss: () => void;
+  onCancel: () => void;
+  onRetry: () => void;
+}) {
+  // Click-once guard so a slow network on /cancel can't fire two requests
+  // before the row disappears.
+  const [busy, setBusy] = React.useState(false);
+
   const icon =
     task.status === "done" ? (
       <CheckCircle2 className="h-4 w-4 text-emerald-600" />
@@ -88,6 +108,20 @@ function TaskRow({ task, onDismiss }: { task: UploadTask; onDismiss: () => void 
 
   const fileLabel = task.fileCount === 1 ? "1 file" : `${task.fileCount} files`;
 
+  const handleCancel = () => {
+    if (busy) return;
+    setBusy(true);
+    onCancel();
+  };
+  const handleRetry = () => {
+    if (busy) return;
+    onRetry();
+  };
+
+  // Done: just the dismiss X (auto-dismiss kicks in after 6s anyway).
+  // Failed: Retry first, then a single X that calls cancel — which both
+  // cleans up any orphan server state and removes the row.
+  // Queued/running: only X, mapped to cancel.
   return (
     <div className="border-b px-3 py-2 last:border-b-0">
       <div className="flex items-start gap-2">
@@ -109,11 +143,44 @@ function TaskRow({ task, onDismiss }: { task: UploadTask; onDismiss: () => void 
             </div>
           )}
         </div>
-        {(task.status === "done" || task.status === "failed") && (
-          <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={onDismiss} aria-label="Dismiss">
-            <X className="h-3 w-3" />
-          </Button>
-        )}
+        <div className="flex shrink-0 items-center gap-0.5">
+          {task.status === "failed" && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={handleRetry}
+              disabled={busy}
+              aria-label="Retry upload"
+              title="Retry"
+            >
+              <RotateCw className="h-3 w-3" />
+            </Button>
+          )}
+          {task.status === "done" ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={onDismiss}
+              aria-label="Dismiss"
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={handleCancel}
+              disabled={busy}
+              aria-label={task.status === "failed" ? "Dismiss" : "Cancel upload"}
+              title={task.status === "failed" ? "Dismiss" : "Cancel"}
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   );

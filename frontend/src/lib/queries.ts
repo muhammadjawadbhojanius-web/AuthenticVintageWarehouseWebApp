@@ -246,6 +246,42 @@ export async function fetchStockReport(
   return res.data;
 }
 
+// ---------------------------------------------------------------------------
+// Bulk-by-list validation — checks pasted codes against the DB before any
+// destructive action runs. Server uppercases + dedupes server-side, so the
+// returned `valid` and `missing` arrays are normalized.
+// ---------------------------------------------------------------------------
+
+export interface BundleCodesValidation {
+  valid: string[];
+  missing: string[];
+}
+
+export async function validateBundleCodes(
+  codes: string[],
+): Promise<BundleCodesValidation> {
+  const res = await api().post<BundleCodesValidation>(
+    "/bundles/validate-codes",
+    { codes },
+  );
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Cancel an in-flight or already-finalized chunked upload. Idempotent on
+// the server; safe to call even if the job has already completed (the
+// server pulls the resulting BundleImage row + file in that case).
+// ---------------------------------------------------------------------------
+
+export async function cancelUpload(
+  bundleCode: string,
+  uploadId: string,
+): Promise<void> {
+  await api().post(
+    `/bundles/${encodeURIComponent(bundleCode)}/uploads/${encodeURIComponent(uploadId)}/cancel`,
+  );
+}
+
 // Health
 export async function checkHealth(): Promise<boolean> {
   try {

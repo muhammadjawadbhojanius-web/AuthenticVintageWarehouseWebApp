@@ -20,6 +20,20 @@ export interface ChunkedUploadOptions {
   onProcessProgress?: (progress: number) => void;
   /** Polling interval for status checks while processing. */
   statusPollMs?: number;
+  /**
+   * Aborts every in-flight axios call (init, chunks, finalize, status
+   * poll). When the signal fires, this function rejects with the
+   * abort/canceled error from the underlying axios layer; callers should
+   * treat that as a clean shutdown rather than an upload failure.
+   */
+  signal?: AbortSignal;
+  /**
+   * Fires once, immediately after the init POST returns the upload_id.
+   * Lets the caller register the id for server-side cancel cleanup while
+   * the upload is still in progress (we can't return it until the whole
+   * function resolves, which may be minutes later for a video).
+   */
+  onUploadIdReady?: (uploadId: string) => void;
 }
 
 /**
@@ -36,17 +50,32 @@ export async function chunkedUpload(opts: ChunkedUploadOptions): Promise<void> {
     onUploadProgress,
     onProcessProgress,
     statusPollMs = 1500,
+    signal,
+    onUploadIdReady,
   } = opts;
 
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
   const client = api();
 
+  // Throws if the caller's AbortController has fired. Used in the
+  // status-poll loop where there's no axios call to carry the signal.
+  const throwIfAborted = () => {
+    if (signal?.aborted) {
+      const reason = signal.reason;
+      throw reason instanceof Error
+        ? reason
+        : new DOMException("Upload cancelled", "AbortError");
+    }
+  };
+
   // 1) Init upload
   const initRes = await client.post<{ upload_id: string }>(
     `/bundles/${encodeURIComponent(bundleCode)}/uploads/init`,
-    { filename, total_size: file.size, total_chunks: totalChunks }
+    { filename, total_size: file.size, total_chunks: totalChunks },
+    { signal }
   );
   const uploadId = initRes.data.upload_id;
+  onUploadIdReady?.(uploadId);
 
   // 2) Upload chunks with bounded parallelism
   let nextIndex = 0;
@@ -67,6 +96,7 @@ export async function chunkedUpload(opts: ChunkedUploadOptions): Promise<void> {
         {
           headers: { "Content-Type": "multipart/form-data" },
           timeout: 600_000, // big chunks on a slow link need a long ceiling
+          signal,
         }
       );
       completed++;
@@ -82,20 +112,38 @@ export async function chunkedUpload(opts: ChunkedUploadOptions): Promise<void> {
 
   // 3) Finalize → server starts the (now lightweight) background task
   await client.post(
-    `/bundles/${encodeURIComponent(bundleCode)}/uploads/${uploadId}/finalize`
+    `/bundles/${encodeURIComponent(bundleCode)}/uploads/${uploadId}/finalize`,
+    undefined,
+    { signal }
   );
 
   // 4) Poll status. Without backend re-encoding this typically completes
   // on the very first poll.
   while (true) {
     await new Promise((r) => setTimeout(r, statusPollMs));
+    throwIfAborted();
     const res = await client.get<UploadJobStatusResponse>(
-      `/bundles/${encodeURIComponent(bundleCode)}/uploads/${uploadId}/status`
+      `/bundles/${encodeURIComponent(bundleCode)}/uploads/${uploadId}/status`,
+      { signal }
     );
     const { status, progress, error } = res.data;
     onProcessProgress?.(progress);
     if (status === "completed") return;
     if (status === "failed") throw new Error(error || "Server processing failed");
+    if (status === "cancelled")
+      throw new DOMException("Upload cancelled", "AbortError");
   }
+}
+
+/**
+ * True for axios-cancel and DOMException AbortError shapes so callers can
+ * suppress "Failed" UI when the abort came from their own cancel button.
+ */
+export function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { name?: string; code?: string; message?: string };
+  if (e.name === "AbortError" || e.name === "CanceledError") return true;
+  if (e.code === "ERR_CANCELED") return true;
+  return false;
 }
 

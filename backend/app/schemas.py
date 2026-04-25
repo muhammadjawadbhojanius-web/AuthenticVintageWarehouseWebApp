@@ -74,6 +74,15 @@ class BundleUpdate(BaseModel):
     bundle_code: str | None = None
     bundle_name: str | None = None
 
+
+class BundleCodesIn(BaseModel):
+    codes: List[str]
+
+
+class BundleCodesValidation(BaseModel):
+    valid: List[str]
+    missing: List[str]
+
 # ---------- BUNDLE ITEM ----------
 
 class BundleItemCreate(BaseModel):

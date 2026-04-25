@@ -4,7 +4,7 @@ import * as React from "react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { Plus, X, Inbox, RefreshCw, Video, Download, Search, Trash2, Share, CheckCircle2, ThumbsUp, ThumbsDown, CheckSquare, SlidersHorizontal } from "lucide-react";
+import { Plus, X, Inbox, RefreshCw, Video, Download, Search, Trash2, Share, CheckCircle2, ThumbsUp, ThumbsDown, CheckSquare, SlidersHorizontal, ClipboardList } from "lucide-react";
 import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/app-header";
 import { BundleCard } from "@/components/bundle-card";
@@ -14,6 +14,7 @@ import { BundleListSkeleton } from "@/components/skeletons";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { BulkByListDialog } from "@/components/bulk-by-list-dialog";
 import { useAuthGuard } from "@/hooks/use-auth-guard";
 import { useAuth } from "@/contexts/auth-context";
 import { useUploadQueue } from "@/contexts/upload-queue-context";
@@ -187,6 +188,10 @@ export default function BundlesPage() {
     | null
   >(null);
   const bulkActionRef = useRef(false);
+  // "Bulk Action By List" entry point. Pasted codes are validated against
+  // the DB inside the dialog; on submit we feed selected + bulkConfirm so
+  // the existing confirm/execution path runs unchanged.
+  const [bulkByListOpen, setBulkByListOpen] = useState(false);
   const uploadQueue = useUploadQueue();
   const device = useMemo(() => detectDevice(), []);
   const isIOS = device === "ios";
@@ -505,6 +510,18 @@ export default function BundlesPage() {
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {/* "By List" entry — opens a paste-codes dialog; doesn't depend
+                on the current selection. Visible whenever the bar is. */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setBulkByListOpen(true)}
+              aria-label="Bulk action by list"
+              title="Paste a list of bundle codes"
+            >
+              <ClipboardList className="h-4 w-4" />
+              By List
+            </Button>
             {canManagePosting && (
               <>
                 <Button
@@ -998,6 +1015,20 @@ export default function BundlesPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* "Bulk Action By List" entry point. The dialog validates pasted
+          codes against the DB and only emits a non-empty all-valid set,
+          which we hand straight to the existing bulk-confirm flow above. */}
+      <BulkByListDialog
+        open={bulkByListOpen}
+        onOpenChange={setBulkByListOpen}
+        canDelete={isAdmin}
+        onSubmit={(codes, action) => {
+          setSelected(new Set(codes));
+          setBulkConfirm(action);
+          setBulkByListOpen(false);
+        }}
+      />
 
       {/* Single backward status-change confirm. Fires only when the
           user picks a lower rank from the dropdown (Sold → Posted,

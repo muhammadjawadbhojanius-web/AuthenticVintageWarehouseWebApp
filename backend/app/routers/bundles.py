@@ -355,6 +355,37 @@ def stock_report(
     }
 
 
+# ---------- VALIDATE BUNDLE CODES ----------
+# Used by the "Bulk Action By List" dialog: the client sends pasted codes,
+# we report which ones actually exist so the destructive action endpoints
+# never get called with bad input. Read-only and idempotent. Capped at
+# 1000 codes per request — far above any realistic warehouse list.
+@router.post("/validate-codes", response_model=schemas.BundleCodesValidation)
+def validate_bundle_codes(
+    payload: schemas.BundleCodesIn,
+    db: Session = Depends(get_db),
+):
+    if len(payload.codes) > 1000:
+        raise HTTPException(status_code=400, detail="Too many codes (max 1000)")
+
+    # Uppercase + dedupe to match the rename flow's normalization. Empty
+    # strings are filtered so an accidental trailing comma doesn't poison
+    # the IN-list with `''`.
+    cleaned = {c.strip().upper() for c in payload.codes if c and c.strip()}
+    if not cleaned:
+        return {"valid": [], "missing": []}
+
+    rows = (
+        db.query(models.Bundle.bundle_code)
+        .filter(models.Bundle.bundle_code.in_(cleaned))
+        .all()
+    )
+    existing = {r[0] for r in rows}
+    missing = sorted(cleaned - existing)
+    valid = sorted(existing)
+    return {"valid": valid, "missing": missing}
+
+
 # ---------- GET SINGLE BUNDLE ----------
 @router.get("/{bundle_code}", response_model=schemas.BundleOut)
 def read_bundle(bundle_code: str, db: Session = Depends(get_db)):
@@ -518,6 +549,60 @@ def upload_status(bundle_code: str, upload_id: str, db: Session = Depends(get_db
     )
 
 
+# ---------- CHUNKED UPLOAD: CANCEL ----------
+# Used by the in-progress upload indicator's per-row X / Retry. Idempotent:
+# always returns ok so the client doesn't need to special-case "already
+# gone". Cleans up whatever exists at call time:
+#   * marks the job row as cancelled (so a still-queued background task
+#     can early-exit on its next status check at the top of _process_upload_job)
+#   * removes the chunk dir on disk if any chunks landed
+#   * if finalize already ran and a BundleImage row was inserted, deletes
+#     the image row + the file from disk so the bundle no longer shows it
+@router.post("/{bundle_code}/uploads/{upload_id}/cancel")
+def upload_cancel(bundle_code: str, upload_id: str, db: Session = Depends(get_db)):
+    job = db.query(models.UploadJob).filter(models.UploadJob.upload_id == upload_id).first()
+    chunk_dir = os.path.join(TEMP_ROOT, upload_id)
+    assembled_path = os.path.join(TEMP_ROOT, f"{upload_id}.assembled")
+
+    image_id = job.image_id if job else None
+    if job is not None:
+        job.status = "cancelled"
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    # On-disk temp artefacts — best-effort.
+    try:
+        if os.path.exists(chunk_dir):
+            shutil.rmtree(chunk_dir, ignore_errors=True)
+    except Exception:
+        pass
+    try:
+        if os.path.exists(assembled_path):
+            os.remove(assembled_path)
+    except Exception:
+        pass
+
+    # If the background task already inserted the image row, pull it back
+    # out so the bundle no longer references the cancelled upload.
+    if image_id is not None:
+        image = db.query(models.BundleImage).filter(models.BundleImage.id == image_id).first()
+        if image is not None:
+            try:
+                if image.image_path and os.path.exists(image.image_path):
+                    os.remove(image.image_path)
+            except Exception:
+                pass
+            db.delete(image)
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+
+    return {"status": "ok"}
+
+
 def _next_available_path(db, bundle_id: int, bundle_code: str, kind: str, ext: str, folder: str) -> str:
     """
     Compute the next free `bundle-{code}_{kind}_{n}.{ext}` filename for a
@@ -558,6 +643,11 @@ def _process_upload_job(upload_id: str, bundle_code: str):
     try:
         job = db.query(models.UploadJob).filter(models.UploadJob.upload_id == upload_id).first()
         if not job:
+            return
+        # User cancelled between finalize and the background task starting.
+        # Skip processing — the cancel endpoint already cleaned up the chunk
+        # dir, but it may race with us so the finally block still tries.
+        if job.status == "cancelled":
             return
         bundle = db.query(models.Bundle).filter(models.Bundle.id == job.bundle_id).first()
         if not bundle:

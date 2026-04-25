@@ -47,7 +47,12 @@ export interface UploadInitResponse {
   upload_id: string;
 }
 
-export type UploadJobStatus = "pending" | "processing" | "completed" | "failed";
+export type UploadJobStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "cancelled";
 
 export interface UploadJobStatusResponse {
   status: UploadJobStatus;
