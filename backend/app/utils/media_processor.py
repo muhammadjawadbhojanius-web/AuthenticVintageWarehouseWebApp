@@ -15,10 +15,14 @@ FFPROBE_BIN = shutil.which("ffprobe") or "/usr/bin/ffprobe"
 # What counts as "already web-ready" and therefore eligible for a lossless
 # stream-copy remux instead of a CPU-heavy re-encode. Audio codec is
 # irrelevant because we strip audio from every video regardless.
+#
+# The window is H.264 ≤1080p ≤30fps — the client compressor's smart-plan
+# target. Sources that fit this can be stream-copied (~0% CPU). Anything
+# else (rare: non-H.264, >1080p, >30fps) falls through to libx264.
 WEB_READY_VIDEO_CODECS = {"h264"}
-MAX_REMUX_WIDTH = 720
-MAX_REMUX_HEIGHT = 1280
-MAX_REMUX_FPS = 30.5  # small tolerance for 29.97
+MAX_REMUX_SHORT_EDGE = 1080  # short edge of 1080p in either orientation
+MAX_REMUX_LONG_EDGE = 1920   # long edge of 1080p in either orientation
+MAX_REMUX_FPS = 30.5         # small tolerance for 29.97
 
 
 def process_image(input_path: str):
@@ -94,12 +98,11 @@ def _probe_video(path: str) -> dict | None:
 
 def _is_web_ready(probe: dict) -> bool:
     """True if the video can be remuxed (stream-copied) instead of re-encoded."""
-    # Fit either orientation inside the 720x1280 box.
+    # Fit either orientation inside the 1080x1920 box.
     w, h = probe["width"], probe["height"]
-    fits = (
-        (w <= MAX_REMUX_WIDTH and h <= MAX_REMUX_HEIGHT)
-        or (w <= MAX_REMUX_HEIGHT and h <= MAX_REMUX_WIDTH)
-    )
+    long_edge = max(w, h)
+    short_edge = min(w, h)
+    fits = long_edge <= MAX_REMUX_LONG_EDGE and short_edge <= MAX_REMUX_SHORT_EDGE
     return (
         probe["vcodec"] in WEB_READY_VIDEO_CODECS
         and fits
@@ -129,13 +132,17 @@ def _remux_video(input_path: str, output_path: str):
 
 def _transcode_video(input_path: str, output_path: str):
     """
-    Full re-encode to H.264/AAC MP4. Used when the input isn't already
-    web-ready. Expensive on low-end CPUs; avoid when possible.
+    Full re-encode to H.264 MP4. Used when the input isn't already
+    web-ready. Expensive on low-end CPUs; avoid when possible. Targets
+    1080p / 30 fps to match the remux window so output is consistent
+    with what the client-side compressor produces. Metadata is stripped
+    (-map_metadata -1) — the file's mtime survives, which is what
+    gallery apps use for "Recent" after download.
     """
     command = [
         FFMPEG_BIN,
         "-i", input_path,
-        "-vf", "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+        "-vf", "scale='min(1080,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
         "-r", "30",
         "-c:v", "libx264",
         "-crf", "23",
@@ -153,7 +160,7 @@ def _transcode_video(input_path: str, output_path: str):
 def process_video(input_path: str, output_path: str):
     """
     Dispatcher: probes the input and picks the cheapest correct action.
-    - Web-ready (H.264/AAC ≤720p ≤30fps, typical client-compressor output):
+    - Web-ready (H.264 ≤1080p ≤30fps, typical client-compressor output):
       stream-copy remux, ~0% CPU, 1-3 seconds.
     - Anything else (exotic codec, too large, unknown): full re-encode.
     Probe failures fall back to full transcode to preserve correctness.

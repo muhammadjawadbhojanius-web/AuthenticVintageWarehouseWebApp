@@ -15,31 +15,54 @@ import type { ConversionAudioOptions } from "mediabunny";
 // Configuration — compression rules
 // ---------------------------------------------------------------------------
 //
-// Decision is driven by the backend's stream-copy remux window (H.264 at
-// ≤720p / ≤30 fps). Anything that falls inside that window is cheap for
-// the server to re-wrap; anything outside forces a CPU-bound libx264
-// transcode. We re-encode on the client whenever that's the case, so the
-// server's job is always the fast one.
+// Goal: deliver the highest-quality MP4 we can while staying inside the
+// 100 MB upload cap and the backend's stream-copy remux window
+// (H.264 ≤1080p ≤30fps). Stream-copy is ~0% CPU on the server; everything
+// outside that window forces a libx264 transcode there.
 //
-//   1. fps > 30 OR resolution > 720p  →  re-encode to fit (720p / 30 fps)
-//                                        at the default bitrate, regardless
-//                                        of file size.
-//   2. Already ≤720p / ≤30 fps, file > 100 MB  →  re-encode same dims/fps
-//                                        with a bitrate targeted to bring
-//                                        the file just under 100 MB.
-//   3. Already ≤720p / ≤30 fps, file ≤ 100 MB  →  skip. Backend remuxes.
+// Decision (in order, easiest-to-most-lossy):
+//
+//   1. Source already H.264 ≤1080p ≤30fps and ≤100 MB
+//        →  skip the client encode. Backend remuxes.
+//   2. fps > 30
+//        →  reduce to 30 fps. Visually fine for warehouse content.
+//   3. Long edge > 1920 (4K and up)
+//        →  scale long edge down to 1920, preserving aspect ratio.
+//   4. Estimated output size > 100 MB
+//        →  drop video bitrate, but never below the per-resolution floor.
+//           If the floor still doesn't fit, step the resolution down a
+//           tier (1080p → 720p) and retry at that floor.
+//
+// We never upsize a low-res source, and we never bump a source's bitrate
+// above what it already had.
 
-const COMPRESS_THRESHOLD_BYTES = 100 * 1024 * 1024; // 100 MB
-const TARGET_SIZE_BYTES = 95 * 1024 * 1024;         // 95 MB target (5MB margin)
+const SIZE_CAP_BYTES = 100 * 1024 * 1024;     // 100 MB hard upload cap
+const SIZE_TARGET_BYTES = 95 * 1024 * 1024;   // 95 MB to leave headroom
 
-const TARGET_LONG_EDGE = 1280;
-const TARGET_SHORT_EDGE = 720;
+// Resolution tiers. "long edge" = max(width, height) so this works for
+// portrait and landscape sources without conditional logic.
+const TIER_1080P_LONG = 1920;
+const TIER_720P_LONG = 1280;
+
+// Default ("comfortable quality") bitrates per tier. The encoder is free
+// to spend less if the source's effective bitrate is already lower.
+const DEFAULT_BITRATE_1080P = 5_000_000;  // 5 Mbps — strong 1080p
+const DEFAULT_BITRATE_720P = 2_500_000;   // 2.5 Mbps — solid 720p
+
+// Floor bitrates per tier — never drop below this for size targeting.
+// Below the floor the picture starts visibly degrading; better to step
+// down to a lower resolution tier instead.
+const FLOOR_BITRATE_1080P = 4_000_000;
+const FLOOR_BITRATE_720P = 2_000_000;
+
 const TARGET_FRAME_RATE = 30;
 const FPS_TOLERANCE = 30.5; // 29.97 source counts as "30 fps"
 
-const DEFAULT_VIDEO_BITRATE = 2_500_000; // 2.5 Mbps for resolution/fps re-encodes
-const DEFAULT_AUDIO_BITRATE = 128_000;   // 128 kbps AAC
-const MIN_VIDEO_BITRATE = 500_000;       // floor for size-targeted re-encode
+// Tolerance for the post-encode duration sanity check. mediabunny's CFR
+// re-stamping bug can stretch some VFR sources; if we ever produce an
+// output more than 5 % off the source duration, we ship the original
+// unchanged and let the backend handle it.
+const DURATION_DRIFT_TOLERANCE = 0.05;
 
 // Fallback MediaRecorder MIME preference (Safari/older browsers only).
 const FALLBACK_MIME_CANDIDATES = [
@@ -71,8 +94,13 @@ interface CompressionPlan {
   outW: number;
   /** Output height in pixels (preserves aspect; even number). */
   outH: number;
-  /** Output frame rate. */
-  fps: number;
+  /**
+   * Output frame rate, or null to preserve the source's (variable) frame
+   * rate. We only set a value when fps actually needs to be reduced;
+   * passing a value to mediabunny forces CFR re-stamping which can
+   * stretch duration on some VFR sources.
+   */
+  fps: number | null;
   /** Target video bitrate in bits/sec. */
   videoBitrate: number;
   /** Human-readable description of why we're re-encoding. */
@@ -106,6 +134,11 @@ export function isCompressionSupported(): boolean {
 // Planning — apply the rules to a probed source
 // ---------------------------------------------------------------------------
 
+/**
+ * Build the cheapest plan that gets the file inside the 100 MB cap *and*
+ * inside the backend's stream-copy window. Returns null when no changes
+ * are needed — caller then ships the original file untouched.
+ */
 function planCompression(
   srcW: number,
   srcH: number,
@@ -115,62 +148,104 @@ function planCompression(
 ): CompressionPlan | null {
   const longEdge = Math.max(srcW, srcH);
   const shortEdge = Math.min(srcW, srcH);
+  const portrait = srcH >= srcW;
+
   const fpsTooHigh = srcFps > FPS_TOLERANCE;
-  const resTooHigh = longEdge > TARGET_LONG_EDGE || shortEdge > TARGET_SHORT_EDGE;
+  const resTooHigh = longEdge > TIER_1080P_LONG;
+  const sizeTooBig = sizeBytes > SIZE_CAP_BYTES;
 
-  // Case A/B/C: fps and/or resolution exceed the backend remux window —
-  // fit to 720p/30fps at the default bitrate. Aspect ratio is preserved by
-  // scaling the long edge to 1280 and the short edge to ≤720 (whichever
-  // is more restrictive). This runs regardless of file size: the point is
-  // to keep the server out of a libx264 transcode.
-  if (fpsTooHigh || resTooHigh) {
-    const scale = resTooHigh
-      ? Math.min(TARGET_LONG_EDGE / longEdge, TARGET_SHORT_EDGE / shortEdge, 1)
-      : 1;
-    const portrait = srcH >= srcW;
-    const outLong = Math.round(longEdge * scale) & ~1;
-    const outShort = Math.round(shortEdge * scale) & ~1;
-    const outW = portrait ? outShort : outLong;
-    const outH = portrait ? outLong : outShort;
-    const fps = fpsTooHigh ? TARGET_FRAME_RATE : srcFps;
-
-    const reasons: string[] = [];
-    if (resTooHigh) reasons.push(`${srcW}x${srcH}→${outW}x${outH}`);
-    if (fpsTooHigh) reasons.push(`${srcFps.toFixed(1)}→${fps}fps`);
-
-    return {
-      outW,
-      outH,
-      fps,
-      videoBitrate: DEFAULT_VIDEO_BITRATE,
-      reason: reasons.join(", "),
-    };
-  }
-
-  // Already inside the remux window. Only re-encode if the file is also
-  // too big to upload comfortably — otherwise let the backend stream-copy.
-  if (sizeBytes <= COMPRESS_THRESHOLD_BYTES) {
+  // Fast path — already in spec on every dimension. Server stream-copies.
+  if (!fpsTooHigh && !resTooHigh && !sizeTooBig) {
     return null;
   }
 
-  // Case D: already at ≤720p/≤30fps but file > 100 MB — re-encode same
-  // dims and fps with a bitrate computed to land just under 100 MB.
-  if (durationSec <= 0) {
-    // No duration → can't compute target bitrate, skip.
+  // Step 1 — pick the resolution. Only downsize when the source long edge
+  // exceeds 1080p; otherwise preserve source dimensions.
+  let outLong = longEdge;
+  let outShort = shortEdge;
+  if (resTooHigh) {
+    const scale = TIER_1080P_LONG / longEdge;
+    outLong = Math.round(longEdge * scale) & ~1;
+    outShort = Math.round(shortEdge * scale) & ~1;
+  }
+
+  // Step 2 — pick the fps. Only set a value when fps must come down;
+  // otherwise null tells the encoder to preserve source PTS (avoids the
+  // CFR re-stamping bug that stretches some VFR sources).
+  const outFps: number | null = fpsTooHigh ? TARGET_FRAME_RATE : null;
+
+  // Step 3 — pick the bitrate. Three inputs:
+  //   • a per-tier default that reflects "comfortable quality"
+  //   • the source's effective bitrate (we never bitrate-bump)
+  //   • a size-cap calculation when the source is too big
+  const isHighTier = outLong > TIER_720P_LONG;
+  let defaultBitrate = isHighTier ? DEFAULT_BITRATE_1080P : DEFAULT_BITRATE_720P;
+  let floorBitrate = isHighTier ? FLOOR_BITRATE_1080P : FLOOR_BITRATE_720P;
+
+  // Effective source bitrate: file-size proxy. Slightly overshoots since
+  // it includes audio that we strip, which is fine — it just means we
+  // err on the side of *more* bitrate, never less.
+  const srcBitrate =
+    durationSec > 0 ? (sizeBytes * 8) / durationSec : defaultBitrate;
+
+  // Size-cap target (only applied when sizeTooBig). 95 MB so we don't
+  // drift over after VBR rate control variance.
+  const sizeBitrate =
+    durationSec > 0 ? (SIZE_TARGET_BYTES * 8) / durationSec : defaultBitrate;
+
+  // Start at min(default, source) — never up-bitrate.
+  let videoBitrate = Math.min(defaultBitrate, srcBitrate);
+
+  if (sizeTooBig) {
+    // Bring it down toward the size target, but not below the tier floor.
+    videoBitrate = Math.max(Math.min(videoBitrate, sizeBitrate), floorBitrate);
+
+    // Even at the floor, the result still wouldn't fit → drop a tier.
+    const floorWillFit = (floorBitrate * durationSec) / 8 <= SIZE_CAP_BYTES;
+    if (!floorWillFit && isHighTier) {
+      // Re-scale to 720p and retry at the lower tier's floor.
+      const scale = TIER_720P_LONG / longEdge;
+      outLong = Math.round(longEdge * scale) & ~1;
+      outShort = Math.round(shortEdge * scale) & ~1;
+      defaultBitrate = DEFAULT_BITRATE_720P;
+      floorBitrate = FLOOR_BITRATE_720P;
+      videoBitrate = Math.max(
+        Math.min(sizeBitrate, defaultBitrate),
+        floorBitrate,
+      );
+    }
+  }
+
+  const outW = portrait ? outShort : outLong;
+  const outH = portrait ? outLong : outShort;
+
+  // Sanity: if after all that nothing actually changed and the source
+  // already fits the size cap, skip. (Rare — e.g. a 30 fps source we
+  // were going to re-encode just for size that turned out to fit.)
+  const dimsUnchanged = outW === srcW && outH === srcH;
+  if (
+    dimsUnchanged &&
+    outFps === null &&
+    videoBitrate >= srcBitrate &&
+    !sizeTooBig
+  ) {
     return null;
   }
-  const targetTotalBps = (TARGET_SIZE_BYTES * 8) / durationSec;
-  const targetVideoBps = Math.max(
-    MIN_VIDEO_BITRATE,
-    Math.floor(targetTotalBps - DEFAULT_AUDIO_BITRATE),
-  );
+
+  const reasons: string[] = [];
+  if (!dimsUnchanged) reasons.push(`${srcW}x${srcH}→${outW}x${outH}`);
+  if (outFps !== null) reasons.push(`${srcFps.toFixed(1)}→${outFps}fps`);
+  if (videoBitrate < srcBitrate * 0.9) {
+    reasons.push(`bitrate→${(videoBitrate / 1e6).toFixed(2)}Mbps`);
+  }
+  if (reasons.length === 0) reasons.push("re-encode for upload cap");
 
   return {
-    outW: srcW,
-    outH: srcH,
-    fps: srcFps,
-    videoBitrate: targetVideoBps,
-    reason: `bitrate→${(targetVideoBps / 1e6).toFixed(2)}Mbps to fit ${TARGET_SIZE_BYTES / 1e6}MB`,
+    outW,
+    outH,
+    fps: outFps,
+    videoBitrate,
+    reason: reasons.join(", "),
   };
 }
 
@@ -196,9 +271,13 @@ async function compressWithMediabunny(
     const srcW = vt.displayWidth;
     const srcH = vt.displayHeight;
 
-    // Probe fps + duration to inform the compression plan.
+    // Probe fps + duration to inform the compression plan. We sample many
+    // packets (not just 60) because computePacketStats(60) only sees the
+    // first ~2 seconds of a 30 fps source — a high-rate burst at the
+    // start of a VFR phone capture (autofocus, exposure) can otherwise
+    // push the average over 30 fps and trigger a needless CFR re-encode.
     const [stats, durationSec] = await Promise.all([
-      vt.computePacketStats(60),
+      vt.computePacketStats(2000),
       input.computeDuration(),
     ]);
     const srcFps = stats.averagePacketRate || 0;
@@ -233,6 +312,11 @@ async function compressWithMediabunny(
     // on Firefox / some Chromium builds.
     const audioOpts: ConversionAudioOptions = { discard: true };
 
+    // Only set frameRate when fps actually needs to come down. Per
+    // mediabunny's docs, omitting it preserves the source's (variable)
+    // frame rate — which is what we want for ≤30fps sources, since
+    // forcing CFR re-stamps every frame at uniform PTS and stretches
+    // duration when the source has bursty inter-frame intervals.
     const conversion = await Conversion.init({
       input,
       output,
@@ -242,7 +326,7 @@ async function compressWithMediabunny(
         fit: "contain",
         codec: "avc",
         bitrate: plan.videoBitrate,
-        frameRate: plan.fps,
+        ...(plan.fps !== null ? { frameRate: plan.fps } : {}),
       },
       audio: audioOpts,
       showWarnings: false,
@@ -275,12 +359,40 @@ async function compressWithMediabunny(
       return file;
     }
 
+    // Duration sanity check — last line of defense against the CFR
+    // re-stamp stretch. If the output's duration drifted more than the
+    // tolerance, ship the original and let the backend decide.
+    const outBlob = new Blob([buf], { type: "video/mp4" });
+    if (durationSec > 0) {
+      try {
+        const probeInput = new Input({
+          source: new BlobSource(outBlob),
+          formats: ALL_FORMATS,
+        });
+        const outDuration = await probeInput.computeDuration();
+        try {
+          (probeInput as unknown as { dispose?: () => void }).dispose?.();
+        } catch {
+          // ignore
+        }
+        const drift = Math.abs(outDuration - durationSec) / durationSec;
+        if (drift > DURATION_DRIFT_TOLERANCE) {
+          console.warn(
+            `[video-compressor] output duration ${outDuration.toFixed(1)}s drifted from source ${durationSec.toFixed(1)}s (${(drift * 100).toFixed(1)}%), using original`,
+          );
+          return file;
+        }
+      } catch (e) {
+        console.warn("[video-compressor] duration verify failed, accepting output", e);
+      }
+    }
+
     console.info(
       `[video-compressor] mediabunny ${(file.size / 1e6).toFixed(1)}MB → ${(buf.byteLength / 1e6).toFixed(1)}MB (${Math.round((1 - buf.byteLength / file.size) * 100)}% reduction)`,
     );
 
     const baseName = file.name.replace(/\.[^.]+$/, "");
-    return new File([buf], `${baseName}.mp4`, { type: "video/mp4" });
+    return new File([outBlob], `${baseName}.mp4`, { type: "video/mp4" });
   } finally {
     try {
       (input as unknown as { dispose?: () => void }).dispose?.();
@@ -324,19 +436,18 @@ async function compressWithMediaRecorder(
     const srcH = video.videoHeight;
     const longEdge = Math.max(srcW, srcH);
     const shortEdge = Math.min(srcW, srcH);
-    const resTooHigh = longEdge > TARGET_LONG_EDGE || shortEdge > TARGET_SHORT_EDGE;
+    // Fallback path uses the 1080p tier too — same backend remux window.
+    const resTooHigh = longEdge > TIER_1080P_LONG;
 
     // If the source already fits the backend remux window and isn't
     // oversized, skip re-encoding. (MediaRecorder can't cheaply probe
     // fps, so we trust dimensions + file size as a proxy.)
-    if (!resTooHigh && file.size <= COMPRESS_THRESHOLD_BYTES) {
+    if (!resTooHigh && file.size <= SIZE_CAP_BYTES) {
       onProgress?.(1);
       return file;
     }
 
-    const scale = resTooHigh
-      ? Math.min(TARGET_LONG_EDGE / longEdge, TARGET_SHORT_EDGE / shortEdge, 1)
-      : 1;
+    const scale = resTooHigh ? TIER_1080P_LONG / longEdge : 1;
     const portrait = srcH >= srcW;
     const outLong = Math.round(longEdge * scale) & ~1;
     const outShort = Math.round(shortEdge * scale) & ~1;
@@ -353,9 +464,11 @@ async function compressWithMediaRecorder(
     // has nothing to encode on the audio side.
     const tracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
 
+    const fallbackBitrate =
+      outLong > TIER_720P_LONG ? DEFAULT_BITRATE_1080P : DEFAULT_BITRATE_720P;
     const recorder = new MediaRecorder(new MediaStream(tracks), {
       mimeType,
-      videoBitsPerSecond: DEFAULT_VIDEO_BITRATE,
+      videoBitsPerSecond: fallbackBitrate,
     });
 
     const chunks: Blob[] = [];
