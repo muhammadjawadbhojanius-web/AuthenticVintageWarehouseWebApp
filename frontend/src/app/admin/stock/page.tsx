@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
-  PackageSearch,
   RefreshCw,
   Search,
   ArrowUpDown,
@@ -14,7 +13,6 @@ import {
   X,
   Download,
 } from "lucide-react";
-import { AppHeader } from "@/components/app-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -225,21 +223,18 @@ export default function StockReportPage() {
 
   return (
     <div className="min-h-screen">
-      <AppHeader />
-      <div className="mx-auto max-w-4xl p-4 space-y-4">
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={() => router.back()}>
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <PackageSearch className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">Stock Report</h1>
-          <span className="ml-2 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-warning">
-            Dev
-          </span>
+      <header className="sticky top-0 z-30 flex items-center gap-2 border-b bg-background/80 px-4 py-3 backdrop-blur">
+        <Button variant="ghost" size="icon" onClick={() => router.back()}>
+          <ArrowLeft className="h-5 w-5" />
+        </Button>
+        <h1 className="font-semibold">Stock Report</h1>
+        <span className="rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-warning">
+          Dev
+        </span>
+        <div className="ml-auto flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
-            className="ml-auto"
             disabled={!stockQuery.isSuccess || rows.length === 0}
             onClick={handleExport}
             title="Export current view to CSV"
@@ -248,7 +243,7 @@ export default function StockReportPage() {
             Export
           </Button>
           <Button
-            variant="outline"
+            variant="ghost"
             size="icon"
             disabled={stockQuery.isFetching}
             onClick={() => stockQuery.refetch()}
@@ -262,6 +257,8 @@ export default function StockReportPage() {
             />
           </Button>
         </div>
+      </header>
+      <div className="mx-auto max-w-4xl space-y-4 p-4">
 
         <p className="text-sm text-muted-foreground">
           Aggregated across every bundle that isn&rsquo;t sold (draft +

@@ -300,7 +300,6 @@ export default function AdminCatalogPage() {
                   item={item}
                   busy={busyIds.has(item.id)}
                   onApprove={() => handleApprove(item)}
-                  onDelete={() => handleDelete(item)}
                   onMerge={approved.length > 0 ? () => {
                     setMergeSource(item);
                     setMergeTargetId("");
@@ -395,7 +394,7 @@ function ItemRow({
   item: CatalogItem;
   busy: boolean;
   onApprove?: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   onMerge?: () => void;
 }) {
   return (
@@ -435,19 +434,21 @@ function ItemRow({
             )}
           </Button>
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          disabled={busy}
-          onClick={onDelete}
-          title="Delete"
-        >
-          {busy && !onApprove ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Trash2 className="h-4 w-4 text-destructive" />
-          )}
-        </Button>
+        {onDelete && (
+          <Button
+            variant="ghost"
+            size="icon"
+            disabled={busy}
+            onClick={onDelete}
+            title="Delete"
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Trash2 className="h-4 w-4 text-destructive" />
+            )}
+          </Button>
+        )}
       </div>
     </div>
   );

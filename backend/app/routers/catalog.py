@@ -210,16 +210,17 @@ def delete_article(article_id: int, db: Session = Depends(get_db)):
 def verify_brands(db: Session = Depends(get_db)):
     """
     Scan every distinct brand value in bundle_items.
-    Any value that has no matching entry in the brands table is added as
-    pending (is_approved=0) so the admin can review/approve/merge it.
+    - Unknown brands: added as pending and bundle_items normalized to stripped name.
+    - Known brands (approved or pending): bundle_items normalized to the canonical
+      catalog name so whitespace/casing variants don't cause repeated warnings.
     Returns only the newly created entries.
     """
     rows = db.execute(
         text("SELECT DISTINCT brand FROM bundle_items WHERE brand IS NOT NULL AND brand != ''")
     ).fetchall()
     added = []
-    for (name,) in rows:
-        name = name.strip()
+    for (raw,) in rows:
+        name = raw.strip()
         if not name:
             continue
         existing = db.query(models.Brand).filter(
@@ -230,6 +231,16 @@ def verify_brands(db: Session = Depends(get_db)):
             db.add(brand)
             db.flush()
             added.append(brand)
+            canonical = name
+        else:
+            canonical = existing.name
+        # Normalize bundle_items to the canonical name so this raw variant
+        # never resurfaces on the next Verify run.
+        if raw != canonical:
+            db.execute(
+                text("UPDATE bundle_items SET brand = :canonical WHERE brand = :raw"),
+                {"canonical": canonical, "raw": raw},
+            )
     db.commit()
     for b in added:
         db.refresh(b)
@@ -240,16 +251,16 @@ def verify_brands(db: Session = Depends(get_db)):
 def verify_articles(db: Session = Depends(get_db)):
     """
     Scan every distinct article value in bundle_items.
-    Any value that has no matching entry in the articles table is added as
-    pending so the admin can review/approve/merge it.
+    - Unknown articles: added as pending and bundle_items normalized to stripped name.
+    - Known articles: bundle_items normalized to the canonical catalog name.
     Returns only the newly created entries.
     """
     rows = db.execute(
         text("SELECT DISTINCT article FROM bundle_items WHERE article IS NOT NULL AND article != ''")
     ).fetchall()
     added = []
-    for (name,) in rows:
-        name = name.strip()
+    for (raw,) in rows:
+        name = raw.strip()
         if not name:
             continue
         existing = db.query(models.Article).filter(
@@ -260,6 +271,14 @@ def verify_articles(db: Session = Depends(get_db)):
             db.add(article)
             db.flush()
             added.append(article)
+            canonical = name
+        else:
+            canonical = existing.name
+        if raw != canonical:
+            db.execute(
+                text("UPDATE bundle_items SET article = :canonical WHERE article = :raw"),
+                {"canonical": canonical, "raw": raw},
+            )
     db.commit()
     for a in added:
         db.refresh(a)
@@ -279,7 +298,7 @@ def merge_brand(source_id: int, target_id: int, db: Session = Depends(get_db)):
     if source_id == target_id:
         raise HTTPException(status_code=400, detail="Source and target must be different")
     db.execute(
-        text("UPDATE bundle_items SET brand = :target WHERE brand = :source"),
+        text("UPDATE bundle_items SET brand = :target WHERE LOWER(TRIM(brand)) = LOWER(:source)"),
         {"target": target.name, "source": source.name},
     )
     db.delete(source)
@@ -300,7 +319,7 @@ def merge_article(source_id: int, target_id: int, db: Session = Depends(get_db))
     if source_id == target_id:
         raise HTTPException(status_code=400, detail="Source and target must be different")
     db.execute(
-        text("UPDATE bundle_items SET article = :target WHERE article = :source"),
+        text("UPDATE bundle_items SET article = :target WHERE LOWER(TRIM(article)) = LOWER(:source)"),
         {"target": target.name, "source": source.name},
     )
     db.delete(source)

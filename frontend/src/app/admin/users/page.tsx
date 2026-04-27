@@ -141,17 +141,17 @@ export default function AdminUsersPage() {
   const list = tab === "pending" ? pendingUsers : activeUsers;
 
   return (
-    <div className="min-h-screen p-4">
-      <div className="mx-auto max-w-2xl">
-        <div className="mb-4 flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={() => router.back()}>
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <h1 className="text-xl font-semibold">User Management</h1>
-          <Button variant="ghost" size="icon" className="ml-auto" onClick={refresh}>
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-        </div>
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-30 flex items-center gap-2 border-b bg-background/80 px-4 py-3 backdrop-blur">
+        <Button variant="ghost" size="icon" onClick={() => router.back()}>
+          <ArrowLeft className="h-5 w-5" />
+        </Button>
+        <h1 className="font-semibold">User Management</h1>
+        <Button variant="ghost" size="icon" className="ml-auto" onClick={refresh}>
+          <RefreshCw className={`h-4 w-4 ${usersQuery.isFetching ? "animate-spin" : ""}`} />
+        </Button>
+      </header>
+      <div className="mx-auto max-w-2xl p-4">
 
         {/* Tabs */}
         <div className="mb-4 flex gap-1 rounded-md border p-1">

@@ -89,13 +89,15 @@ interface FilterPanelProps {
   groups: FilterGroup[];
   onClear: (() => void) | null;
   onClose: () => void;
+  excludeRef?: React.RefObject<HTMLElement>;
 }
 
-function FilterPanel({ anchorRect, groups, onClear, onClose }: FilterPanelProps) {
+function FilterPanel({ anchorRect, groups, onClear, onClose, excludeRef }: FilterPanelProps) {
   const ref = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     const onDoc = (e: MouseEvent) => {
+      if (excludeRef?.current?.contains(e.target as Node)) return;
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
@@ -107,7 +109,7 @@ function FilterPanel({ anchorRect, groups, onClear, onClose }: FilterPanelProps)
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [onClose]);
+  }, [onClose, excludeRef]);
 
   if (!anchorRect || typeof document === "undefined") return null;
 
@@ -479,8 +481,8 @@ export default function BundlesPage() {
       ? allBundles.filter((b) =>
           (b.items ?? []).some(
             (item) =>
-              (item.brand && !approvedBrandNames.has(item.brand.toLowerCase())) ||
-              (item.article && !approvedArticleNames.has(item.article.toLowerCase())),
+              (item.brand && !approvedBrandNames.has(item.brand.trim().toLowerCase())) ||
+              (item.article && !approvedArticleNames.has(item.article.trim().toLowerCase())),
           ),
         )
       : allBundles;
@@ -705,6 +707,7 @@ export default function BundlesPage() {
         {filterOpen && (
           <FilterPanel
             anchorRect={filterRect}
+            excludeRef={filterBtnRef as React.RefObject<HTMLElement>}
             groups={[
               {
                 label: "Status",
@@ -800,8 +803,8 @@ export default function BundlesPage() {
               const code = b.bundle_code;
               const hasPendingCatalog = (b.items ?? []).some(
                 (item) =>
-                  (item.brand && !approvedBrandNames.has(item.brand.toLowerCase())) ||
-                  (item.article && !approvedArticleNames.has(item.article.toLowerCase())),
+                  (item.brand && !approvedBrandNames.has(item.brand.trim().toLowerCase())) ||
+                  (item.article && !approvedArticleNames.has(item.article.trim().toLowerCase())),
               );
               return (
                 <BundleCard

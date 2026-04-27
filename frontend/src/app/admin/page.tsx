@@ -22,14 +22,14 @@ export default function AdminHubPage() {
   }
 
   return (
-    <div className="min-h-screen p-4">
-      <div className="mx-auto max-w-2xl space-y-3">
-        <div className="mb-4 flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={() => router.back()}>
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <h1 className="text-xl font-semibold">Admin Hub</h1>
-        </div>
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-30 flex items-center gap-2 border-b bg-background/80 px-4 py-3 backdrop-blur">
+        <Button variant="ghost" size="icon" onClick={() => router.back()}>
+          <ArrowLeft className="h-5 w-5" />
+        </Button>
+        <h1 className="font-semibold">Admin Hub</h1>
+      </header>
+      <div className="mx-auto max-w-2xl space-y-3 p-4">
 
         <Card
           className="cursor-pointer hover:bg-accent/40"
