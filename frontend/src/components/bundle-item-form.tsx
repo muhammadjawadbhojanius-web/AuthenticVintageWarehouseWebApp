@@ -1,10 +1,18 @@
 "use client";
 
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { CreatableCombobox } from "@/components/creatable-combobox";
+import {
+  fetchApprovedBrands,
+  fetchApprovedArticles,
+  createBrandPending,
+  createArticlePending,
+} from "@/lib/queries";
 
 export interface BundleItemFormValues {
   gender: string;
@@ -18,13 +26,13 @@ export interface BundleItemFormValues {
 }
 
 export const EMPTY_ITEM: BundleItemFormValues = {
-  gender: "Men",
+  gender: "Unisex",
   brand: "",
   article: "",
   number_of_pieces: 0,
   gift_pcs: 0,
-  grade: "A",
-  size_variation: "",
+  grade: "A/B",
+  size_variation: "XS-XXL",
   comments: "",
 };
 
@@ -38,6 +46,29 @@ interface BundleItemFormProps {
 }
 
 export function BundleItemForm({ value, onChange, disabled }: BundleItemFormProps) {
+  const brandsQuery = useQuery({
+    queryKey: ["catalog", "brands"],
+    queryFn: fetchApprovedBrands,
+    staleTime: 60_000,
+  });
+
+  const articlesQuery = useQuery({
+    queryKey: ["catalog", "articles"],
+    queryFn: fetchApprovedArticles,
+    staleTime: 60_000,
+  });
+
+  const approvedBrands = brandsQuery.data ?? [];
+  const approvedArticles = articlesQuery.data ?? [];
+
+  const brandIsPending =
+    !!value.brand &&
+    !approvedBrands.some((b) => b.name.toLowerCase() === value.brand.toLowerCase());
+
+  const articleIsPending =
+    !!value.article &&
+    !approvedArticles.some((a) => a.name.toLowerCase() === value.article.toLowerCase());
+
   return (
     <div className="space-y-3">
       <div className="space-y-2">
@@ -53,21 +84,33 @@ export function BundleItemForm({ value, onChange, disabled }: BundleItemFormProp
         </Select>
       </div>
       <div className="space-y-2">
-        <Label>Brand(s)</Label>
-        <Input
+        <Label>Brand</Label>
+        <CreatableCombobox
           value={value.brand}
-          onChange={(e) => onChange({ ...value, brand: e.target.value })}
-          placeholder="e.g. Nike, Adidas"
+          onChange={(v) => onChange({ ...value, brand: v })}
+          options={approvedBrands}
+          onCreatePending={async (name) => {
+            await createBrandPending(name);
+            await brandsQuery.refetch();
+          }}
+          placeholder="Select brand…"
           disabled={disabled}
+          isPending={brandIsPending}
         />
       </div>
       <div className="space-y-2">
-        <Label>Article(s)</Label>
-        <Input
+        <Label>Article</Label>
+        <CreatableCombobox
           value={value.article}
-          onChange={(e) => onChange({ ...value, article: e.target.value })}
-          placeholder="e.g. Hoodie, T-Shirt"
+          onChange={(v) => onChange({ ...value, article: v })}
+          options={approvedArticles}
+          onCreatePending={async (name) => {
+            await createArticlePending(name);
+            await articlesQuery.refetch();
+          }}
+          placeholder="Select article…"
           disabled={disabled}
+          isPending={articleIsPending}
         />
       </div>
       <div className="grid grid-cols-3 gap-2">
@@ -109,7 +152,7 @@ export function BundleItemForm({ value, onChange, disabled }: BundleItemFormProp
         <Input
           value={value.size_variation}
           onChange={(e) => onChange({ ...value, size_variation: e.target.value })}
-          placeholder="e.g. S to XXL"
+          placeholder="e.g. XS-XXL"
           disabled={disabled}
         />
       </div>

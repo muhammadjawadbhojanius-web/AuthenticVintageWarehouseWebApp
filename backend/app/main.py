@@ -6,7 +6,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from . import models, database
 import os
-from .routers import users, bundles, media, templates
+from .routers import users, bundles, media, templates, catalog
 
 # Disable default docs so we can serve them locally (no CDN required)
 app = FastAPI(title="Authentic Warehouse API", docs_url=None, redoc_url=None)
@@ -48,6 +48,42 @@ with database.engine.connect() as _conn:
     _conn.execute(_text(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_bundles_bundle_code ON bundles(bundle_code)"
     ))
+    # Idempotent create for brands and articles catalog tables.
+    # create_all() above handles new installs; this covers pre-existing DBs.
+    _conn.execute(_text("""
+        CREATE TABLE IF NOT EXISTS brands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            is_approved INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    _conn.execute(_text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_brands_name ON brands(name)"
+    ))
+    # Add missing columns to brands if the table was created without them.
+    _brand_cols = {row[1] for row in _conn.execute(_text("PRAGMA table_info(brands)")).fetchall()}
+    if "is_approved" not in _brand_cols:
+        _conn.execute(_text("ALTER TABLE brands ADD COLUMN is_approved INTEGER NOT NULL DEFAULT 0"))
+    if "created_at" not in _brand_cols:
+        _conn.execute(_text("ALTER TABLE brands ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"))
+    _conn.execute(_text("""
+        CREATE TABLE IF NOT EXISTS articles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            is_approved INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    _conn.execute(_text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_articles_name ON articles(name)"
+    ))
+    # Add missing columns to articles if the table was created without them.
+    _article_cols = {row[1] for row in _conn.execute(_text("PRAGMA table_info(articles)")).fetchall()}
+    if "is_approved" not in _article_cols:
+        _conn.execute(_text("ALTER TABLE articles ADD COLUMN is_approved INTEGER NOT NULL DEFAULT 0"))
+    if "created_at" not in _article_cols:
+        _conn.execute(_text("ALTER TABLE articles ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"))
     _conn.commit()
 
 # Create uploads directory if it doesn't exist
@@ -82,3 +118,4 @@ app.include_router(users.router)
 app.include_router(bundles.router)
 app.include_router(media.router)
 app.include_router(templates.router)
+app.include_router(catalog.router)

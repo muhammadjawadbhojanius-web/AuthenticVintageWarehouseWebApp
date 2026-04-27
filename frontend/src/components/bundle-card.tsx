@@ -13,6 +13,7 @@ import {
   ThumbsUp,
   ThumbsDown,
   Check,
+  AlertTriangle,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -107,6 +108,8 @@ export interface BundleCardProps {
   canDelete?: boolean;
   /** Admin + Listing Executives. Renders the Posted/Draft pill. */
   canManagePosting?: boolean;
+  /** True when any item in this bundle has a brand/article not yet approved in the catalog. */
+  hasPendingCatalog?: boolean;
 }
 
 function formatDate(s?: string): string {
@@ -264,6 +267,7 @@ function BundleCardImpl({
   canDownload = false,
   canDelete = false,
   canManagePosting = false,
+  hasPendingCatalog = false,
 }: BundleCardProps) {
   // Refs (not state) so we don't trigger re-renders and so the values are
   // read synchronously by handlers that might fire between state flushes.
@@ -365,11 +369,16 @@ function BundleCardImpl({
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* Top row: code + media badge */}
+          {/* Top row: code + pending indicator + media badge */}
           <div className="flex items-start gap-2">
             <h3 className="min-w-0 flex-1 truncate text-base font-bold tracking-tight text-foreground">
               {bundle.bundle_code}
             </h3>
+            {hasPendingCatalog && (
+              <span title="This bundle has items with brands or articles pending catalog approval">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              </span>
+            )}
             <span
               className={cn(
                 "shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide",

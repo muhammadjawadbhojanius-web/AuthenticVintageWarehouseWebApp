@@ -218,9 +218,11 @@ def read_bundles(
     posted: int = None,
     # Bundle-code prefix (e.g. "AV" or "AVG"); matches "{prefix}-%". Omit for "all".
     prefix: str = None,
+    # True = only bundles with media, False = only bundles without. Omit for "all".
+    has_media: bool = None,
     db: Session = Depends(get_db),
 ):
-    return crud.get_bundles(db, search=search, posted=posted, prefix=prefix)
+    return crud.get_bundles(db, search=search, posted=posted, prefix=prefix, has_media=has_media)
 
 
 # ---------- STOCK REPORT ----------

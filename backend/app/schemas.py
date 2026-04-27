@@ -112,6 +112,25 @@ class BundleItemOut(BaseModel):
     }
 
 
+# ---------- CATALOG ----------
+
+class CatalogItemOut(BaseModel):
+    id: int
+    name: str
+    is_approved: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CatalogItemCreate(BaseModel):
+    name: str
+
+
+class CatalogBulkCreate(BaseModel):
+    names: List[str]
+
+
 # ---------- CHUNKED UPLOAD ----------
 
 class UploadInitRequest(BaseModel):

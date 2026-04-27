@@ -58,6 +58,24 @@ class BundleImage(Base):
     bundle = relationship("Bundle", back_populates="images")
 
 
+class Brand(Base):
+    __tablename__ = "brands"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True)
+    is_approved = Column(Integer, default=0)  # 0 = pending, 1 = approved
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class Article(Base):
+    __tablename__ = "articles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True)
+    is_approved = Column(Integer, default=0)  # 0 = pending, 1 = approved
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class UploadJob(Base):
     """Tracks a chunked upload from init through processing."""
     __tablename__ = "upload_jobs"

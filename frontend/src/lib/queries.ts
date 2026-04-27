@@ -48,6 +48,8 @@ export interface BundleListFilters {
   posted?: number;
   /** Bundle-code prefix like "AV" or "AVG". Leave undefined for "all". */
   prefix?: string;
+  /** true = only bundles with media, false = only without. Leave undefined for "all". */
+  has_media?: boolean;
 }
 
 export async function fetchBundles(
@@ -60,6 +62,7 @@ export async function fetchBundles(
   if (f.search) params.append("search", f.search);
   if (f.posted !== undefined) params.append("posted", String(f.posted));
   if (f.prefix) params.append("prefix", f.prefix);
+  if (f.has_media !== undefined) params.append("has_media", String(f.has_media));
   const qs = params.toString();
   const url = qs ? `/bundles/?${qs}` : "/bundles/";
   const res = await api().get<Bundle[]>(url);
@@ -280,6 +283,95 @@ export async function cancelUpload(
   await api().post(
     `/bundles/${encodeURIComponent(bundleCode)}/uploads/${encodeURIComponent(uploadId)}/cancel`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Catalog — brands and articles
+// ---------------------------------------------------------------------------
+
+export interface CatalogItem {
+  id: number;
+  name: string;
+  is_approved: number;
+  created_at: string;
+}
+
+export async function fetchApprovedBrands(): Promise<CatalogItem[]> {
+  const res = await api().get<CatalogItem[]>("/catalog/brands");
+  return res.data;
+}
+
+export async function fetchAllBrands(): Promise<CatalogItem[]> {
+  const res = await api().get<CatalogItem[]>("/catalog/brands/all");
+  return res.data;
+}
+
+export async function createBrandPending(name: string): Promise<CatalogItem> {
+  const res = await api().post<CatalogItem>("/catalog/brands", { name });
+  return res.data;
+}
+
+export async function bulkCreateBrands(names: string[]): Promise<CatalogItem[]> {
+  const res = await api().post<CatalogItem[]>("/catalog/brands/bulk", { names });
+  return res.data;
+}
+
+export async function approveBrand(id: number): Promise<CatalogItem> {
+  const res = await api().patch<CatalogItem>(`/catalog/brands/${id}/approve`);
+  return res.data;
+}
+
+export async function deleteBrand(id: number): Promise<void> {
+  await api().delete(`/catalog/brands/${id}`);
+}
+
+export async function fetchApprovedArticles(): Promise<CatalogItem[]> {
+  const res = await api().get<CatalogItem[]>("/catalog/articles");
+  return res.data;
+}
+
+export async function fetchAllArticles(): Promise<CatalogItem[]> {
+  const res = await api().get<CatalogItem[]>("/catalog/articles/all");
+  return res.data;
+}
+
+export async function createArticlePending(name: string): Promise<CatalogItem> {
+  const res = await api().post<CatalogItem>("/catalog/articles", { name });
+  return res.data;
+}
+
+export async function bulkCreateArticles(names: string[]): Promise<CatalogItem[]> {
+  const res = await api().post<CatalogItem[]>("/catalog/articles/bulk", { names });
+  return res.data;
+}
+
+export async function approveArticle(id: number): Promise<CatalogItem> {
+  const res = await api().patch<CatalogItem>(`/catalog/articles/${id}/approve`);
+  return res.data;
+}
+
+export async function deleteArticle(id: number): Promise<void> {
+  await api().delete(`/catalog/articles/${id}`);
+}
+
+export async function verifyBrands(): Promise<CatalogItem[]> {
+  const res = await api().post<CatalogItem[]>("/catalog/brands/verify");
+  return res.data;
+}
+
+export async function verifyArticles(): Promise<CatalogItem[]> {
+  const res = await api().post<CatalogItem[]>("/catalog/articles/verify");
+  return res.data;
+}
+
+export async function mergeBrand(sourceId: number, targetId: number): Promise<CatalogItem> {
+  const res = await api().patch<CatalogItem>(`/catalog/brands/${sourceId}/merge/${targetId}`);
+  return res.data;
+}
+
+export async function mergeArticle(sourceId: number, targetId: number): Promise<CatalogItem> {
+  const res = await api().patch<CatalogItem>(`/catalog/articles/${sourceId}/merge/${targetId}`);
+  return res.data;
 }
 
 // Health

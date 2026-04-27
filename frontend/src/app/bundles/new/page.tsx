@@ -2,13 +2,14 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { CreatableCombobox } from "@/components/creatable-combobox";
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
@@ -23,6 +24,10 @@ import {
   addBundleItem,
   updateBundleStatus,
   extractConflictDetail,
+  fetchApprovedBrands,
+  fetchApprovedArticles,
+  createBrandPending,
+  createArticlePending,
   type BundleCodeExistsCreateError,
 } from "@/lib/queries";
 import { isVideoFilename } from "@/lib/media";
@@ -45,13 +50,13 @@ const GENDERS = ["Men", "Women", "Unisex", "Kids"];
 const GRADES = ["A", "B", "C", "A/B", "B/C", "A/B/C"];
 
 const emptyItem: DraftItem = {
-  gender: "Men",
+  gender: "Unisex",
   brand: "",
   article: "",
   number_of_pieces: 0,
   gift_pcs: 0,
-  grade: "A",
-  size_variation: "",
+  grade: "A/B",
+  size_variation: "XS-XXL",
   comments: "",
 };
 
@@ -65,6 +70,19 @@ export default function NewBundlePage() {
   // Only Admin + Content Creators may create bundles. Listing
   // Executives get bounced so they can't reach this form by URL.
   const canCreate = role === "Admin" || role === "Content Creators";
+
+  const brandsQuery = useQuery({
+    queryKey: ["catalog", "brands"],
+    queryFn: fetchApprovedBrands,
+    staleTime: 60_000,
+  });
+  const articlesQuery = useQuery({
+    queryKey: ["catalog", "articles"],
+    queryFn: fetchApprovedArticles,
+    staleTime: 60_000,
+  });
+  const approvedBrands = brandsQuery.data ?? [];
+  const approvedArticles = articlesQuery.data ?? [];
 
   const [media, setMedia] = useState<File[]>([]);
   const [bundleCode, setBundleCode] = useState("");
@@ -291,20 +309,30 @@ export default function NewBundlePage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Brand(s)</Label>
-              <Input
+              <Label>Brand</Label>
+              <CreatableCombobox
                 value={draft.brand}
-                onChange={(e) => setDraft({ ...draft, brand: e.target.value })}
-                placeholder="e.g. Nike, Adidas"
+                onChange={(v) => setDraft({ ...draft, brand: v })}
+                options={approvedBrands}
+                onCreatePending={async (name) => {
+                  await createBrandPending(name);
+                  await brandsQuery.refetch();
+                }}
+                placeholder="Select brand…"
                 disabled={submitting}
               />
             </div>
             <div className="space-y-2">
-              <Label>Article(s)</Label>
-              <Input
+              <Label>Article</Label>
+              <CreatableCombobox
                 value={draft.article}
-                onChange={(e) => setDraft({ ...draft, article: e.target.value })}
-                placeholder="e.g. Hoodie, T-Shirt"
+                onChange={(v) => setDraft({ ...draft, article: v })}
+                options={approvedArticles}
+                onCreatePending={async (name) => {
+                  await createArticlePending(name);
+                  await articlesQuery.refetch();
+                }}
+                placeholder="Select article…"
                 disabled={submitting}
               />
             </div>

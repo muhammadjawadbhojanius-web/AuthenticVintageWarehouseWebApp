@@ -110,12 +110,13 @@ def get_bundles(
     search: str = None,
     posted: int = None,
     prefix: str = None,
+    has_media: bool = None,
 ):
     """List bundles, optionally filtered by free-text `search`, posting
-    status (`posted`: 0 draft / 1 posted / 2 sold), and a code prefix
-    like "AV" or "AVG" (matches `AV-%` / `AVG-%`). Filters combine with
-    AND — all are applied on top of each other so they work alongside
-    search.
+    status (`posted`: 0 draft / 1 posted / 2 sold), a code prefix like
+    "AV" or "AVG" (matches `AV-%` / `AVG-%`), and media presence
+    (`has_media`: True = at least one image, False = no images). Filters
+    combine with AND.
     """
     # selectinload issues exactly two extra queries (one for all items,
     # one for all images) regardless of bundle count, instead of N+1.
@@ -134,6 +135,11 @@ def get_bundles(
         safe_prefix = _re.sub(r"[^A-Za-z0-9]", "", prefix)
         if safe_prefix:
             query = query.filter(models.Bundle.bundle_code.like(f"{safe_prefix}-%"))
+
+    if has_media is True:
+        query = query.filter(models.Bundle.images.any())
+    elif has_media is False:
+        query = query.filter(~models.Bundle.images.any())
 
     if search:
         search_filter = f"%{search}%"

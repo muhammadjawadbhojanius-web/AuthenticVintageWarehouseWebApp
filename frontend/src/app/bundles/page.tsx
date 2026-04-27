@@ -19,7 +19,7 @@ import { useAuthGuard } from "@/hooks/use-auth-guard";
 import { useAuth } from "@/contexts/auth-context";
 import { useUploadQueue } from "@/contexts/upload-queue-context";
 import { useToast } from "@/components/toaster";
-import { fetchBundles, deleteBundle as apiDeleteBundle, updateBundlePosted } from "@/lib/queries";
+import { fetchBundles, deleteBundle as apiDeleteBundle, updateBundlePosted, fetchApprovedBrands, fetchApprovedArticles } from "@/lib/queries";
 import { fetchClipboardTemplate, copyBundleToClipboard } from "@/lib/clipboard-template";
 import { isVideoFilename, mediaUrlFor } from "@/lib/media";
 import { detectDevice, nativeDownload, shareFile } from "@/lib/download";
@@ -111,8 +111,8 @@ function FilterPanel({ anchorRect, groups, onClear, onClose }: FilterPanelProps)
 
   if (!anchorRect || typeof document === "undefined") return null;
 
-  // Panel roughly ~220 px tall; flip upward when there isn't room below.
-  const estimatedHeight = 220;
+  // Panel roughly ~300 px tall (3 groups); flip upward when there isn't room below.
+  const estimatedHeight = 300;
   const spaceBelow = window.innerHeight - anchorRect.bottom;
   const openUp = spaceBelow < estimatedHeight + 8;
   const top = openUp
@@ -214,14 +214,18 @@ export default function BundlesPage() {
   // so the behaviour is identical across roles.
   type StatusFilter = "all" | 0 | 1 | 2;
   type PrefixFilter = "all" | "AV" | "AVG";
+  type MediaFilter = "all" | "with" | "without";
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [prefixFilter, setPrefixFilter] = useState<PrefixFilter>("all");
+  const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
   // Popover open/close + anchor rect for portal positioning.
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterRect, setFilterRect] = useState<DOMRect | null>(null);
   const filterBtnRef = useRef<HTMLButtonElement | null>(null);
   const activeFilterCount =
-    (statusFilter !== "all" ? 1 : 0) + (prefixFilter !== "all" ? 1 : 0);
+    (statusFilter !== "all" ? 1 : 0) +
+    (prefixFilter !== "all" ? 1 : 0) +
+    (mediaFilter !== "all" ? 1 : 0);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -242,15 +246,38 @@ export default function BundlesPage() {
   const canCreateBundle = isAdmin || isContentCreator;
 
   const bundlesQuery = useQuery({
-    queryKey: ["bundles", debouncedSearch, statusFilter, prefixFilter],
+    queryKey: ["bundles", debouncedSearch, statusFilter, prefixFilter, mediaFilter],
     queryFn: () =>
       fetchBundles({
         search: debouncedSearch || undefined,
         posted: statusFilter === "all" ? undefined : statusFilter,
         prefix: prefixFilter === "all" ? undefined : prefixFilter,
+        has_media:
+          mediaFilter === "with" ? true : mediaFilter === "without" ? false : undefined,
       }),
     enabled: ready,
   });
+
+  const approvedBrandsQuery = useQuery({
+    queryKey: ["catalog", "brands"],
+    queryFn: fetchApprovedBrands,
+    staleTime: 60_000,
+    enabled: ready,
+  });
+  const approvedArticlesQuery = useQuery({
+    queryKey: ["catalog", "articles"],
+    queryFn: fetchApprovedArticles,
+    staleTime: 60_000,
+    enabled: ready,
+  });
+  const approvedBrandNames = useMemo(
+    () => new Set((approvedBrandsQuery.data ?? []).map((b) => b.name.toLowerCase())),
+    [approvedBrandsQuery.data],
+  );
+  const approvedArticleNames = useMemo(
+    () => new Set((approvedArticlesQuery.data ?? []).map((a) => a.name.toLowerCase())),
+    [approvedArticlesQuery.data],
+  );
 
   const deleteMutation = useMutation({
     mutationFn: (code: string) => apiDeleteBundle(code),
@@ -684,12 +711,23 @@ export default function BundlesPage() {
                   { value: "AVG", label: "AVG-" },
                 ],
               },
+              {
+                label: "Media",
+                value: mediaFilter,
+                onChange: (v) => setMediaFilter(v as MediaFilter),
+                options: [
+                  { value: "all", label: "All" },
+                  { value: "with", label: "With" },
+                  { value: "without", label: "Without" },
+                ],
+              },
             ]}
             onClear={
               activeFilterCount > 0
                 ? () => {
                     setStatusFilter("all");
                     setPrefixFilter("all");
+                    setMediaFilter("all");
                   }
                 : null
             }
@@ -726,10 +764,16 @@ export default function BundlesPage() {
           <div className="mx-auto max-w-2xl space-y-2">
             {bundles.map((b) => {
               const code = b.bundle_code;
+              const hasPendingCatalog = (b.items ?? []).some(
+                (item) =>
+                  (item.brand && !approvedBrandNames.has(item.brand.toLowerCase())) ||
+                  (item.article && !approvedArticleNames.has(item.article.toLowerCase())),
+              );
               return (
                 <BundleCard
                   key={code}
                   bundle={b}
+                  hasPendingCatalog={hasPendingCatalog}
                   selectionMode={selectionMode}
                   selected={selected.has(code)}
                   canDownload={canDownload}
