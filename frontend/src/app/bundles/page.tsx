@@ -111,8 +111,8 @@ function FilterPanel({ anchorRect, groups, onClear, onClose }: FilterPanelProps)
 
   if (!anchorRect || typeof document === "undefined") return null;
 
-  // Panel roughly ~300 px tall (3 groups); flip upward when there isn't room below.
-  const estimatedHeight = 300;
+  // Panel roughly ~370 px tall (4 groups); flip upward when there isn't room below.
+  const estimatedHeight = 370;
   const spaceBelow = window.innerHeight - anchorRect.bottom;
   const openUp = spaceBelow < estimatedHeight + 8;
   const top = openUp
@@ -215,9 +215,11 @@ export default function BundlesPage() {
   type StatusFilter = "all" | 0 | 1 | 2;
   type PrefixFilter = "all" | "AV" | "AVG";
   type MediaFilter = "all" | "with" | "without";
+  type WarningFilter = "all" | "warnings";
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [prefixFilter, setPrefixFilter] = useState<PrefixFilter>("all");
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
+  const [warningFilter, setWarningFilter] = useState<WarningFilter>("all");
   // Popover open/close + anchor rect for portal positioning.
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterRect, setFilterRect] = useState<DOMRect | null>(null);
@@ -225,7 +227,8 @@ export default function BundlesPage() {
   const activeFilterCount =
     (statusFilter !== "all" ? 1 : 0) +
     (prefixFilter !== "all" ? 1 : 0) +
-    (mediaFilter !== "all" ? 1 : 0);
+    (mediaFilter !== "all" ? 1 : 0) +
+    (warningFilter !== "all" ? 1 : 0);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -467,7 +470,20 @@ export default function BundlesPage() {
   // Defensive: the query layer already rejects non-array responses, but
   // in case something slips through (persisted cache, mid-rollout build)
   // we still want .map to be safe.
-  const bundles = Array.isArray(bundlesQuery.data) ? bundlesQuery.data : [];
+  const allBundles = Array.isArray(bundlesQuery.data) ? bundlesQuery.data : [];
+
+  // Client-side warning filter — applied after server filters because
+  // pending-catalog detection requires the approved sets fetched separately.
+  const bundles =
+    warningFilter === "warnings"
+      ? allBundles.filter((b) =>
+          (b.items ?? []).some(
+            (item) =>
+              (item.brand && !approvedBrandNames.has(item.brand.toLowerCase())) ||
+              (item.article && !approvedArticleNames.has(item.article.toLowerCase())),
+          ),
+        )
+      : allBundles;
 
   const showSelectionBar = selectionMode && (isAdmin || canManagePosting);
   const selectableCodes = bundles.map((b) => b.bundle_code);
@@ -721,6 +737,15 @@ export default function BundlesPage() {
                   { value: "without", label: "Without" },
                 ],
               },
+              {
+                label: "Warnings",
+                value: warningFilter,
+                onChange: (v) => setWarningFilter(v as WarningFilter),
+                options: [
+                  { value: "all", label: "All" },
+                  { value: "warnings", label: "Only ⚠" },
+                ],
+              },
             ]}
             onClear={
               activeFilterCount > 0
@@ -728,6 +753,7 @@ export default function BundlesPage() {
                     setStatusFilter("all");
                     setPrefixFilter("all");
                     setMediaFilter("all");
+                    setWarningFilter("all");
                   }
                 : null
             }
@@ -753,10 +779,18 @@ export default function BundlesPage() {
           <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
             <Inbox className="h-12 w-12" />
             <p className="mt-3 font-medium">
-              {search ? "No matches found" : "No bundles yet"}
+              {warningFilter === "warnings"
+                ? "No bundles with warnings"
+                : search
+                  ? "No matches found"
+                  : "No bundles yet"}
             </p>
             <p className="text-sm">
-              {search ? "Try a different search term." : "Tap the + button to add one."}
+              {warningFilter === "warnings"
+                ? "All brands and articles are approved."
+                : search
+                  ? "Try a different search term."
+                  : "Tap the + button to add one."}
             </p>
           </div>
         )}
