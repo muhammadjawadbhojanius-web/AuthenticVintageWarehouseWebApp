@@ -46,6 +46,11 @@ class BundlePostedUpdate(BaseModel):
     # 0 = draft, 1 = posted, 2 = sold
     posted: int
 
+
+class BundleLocationUpdate(BaseModel):
+    # Format "AV-NN" / "AVG-NN", or empty string / None to clear.
+    location: Optional[str] = None
+
 class BundleImageOut(BaseModel):
     id: int
     image_path: str
@@ -61,6 +66,7 @@ class BundleOut(BaseModel):
     bundle_name: Optional[str] = None
     status: str
     posted: int = 0
+    location: Optional[str] = None
     created_at: datetime
     items: List['BundleItemOut'] = []
     images: List[BundleImageOut] = []

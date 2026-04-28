@@ -41,6 +41,8 @@ with database.engine.connect() as _conn:
     _cols = {row[1] for row in _conn.execute(_text("PRAGMA table_info(bundles)")).fetchall()}
     if "posted" not in _cols:
         _conn.execute(_text("ALTER TABLE bundles ADD COLUMN posted INTEGER NOT NULL DEFAULT 0"))
+    if "location" not in _cols:
+        _conn.execute(_text("ALTER TABLE bundles ADD COLUMN location TEXT"))
     # Guarantee bundle_code uniqueness at the DB level. declared `unique=True`
     # on the model only applies to tables freshly created by create_all(); a
     # DB from before that annotation won't actually have the constraint,

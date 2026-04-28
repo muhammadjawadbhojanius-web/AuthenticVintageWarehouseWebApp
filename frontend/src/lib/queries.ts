@@ -120,6 +120,18 @@ export async function updateBundlePosted(bundleCode: string, posted: number) {
   await api().patch(`/bundles/${encodeURIComponent(bundleCode)}/posted`, { posted });
 }
 
+export async function updateBundleLocation(
+  bundleCode: string,
+  location: string | null,
+) {
+  // Empty string / null clears the location on the server.
+  const res = await api().patch<Bundle>(
+    `/bundles/${encodeURIComponent(bundleCode)}/location`,
+    { location: location ?? "" },
+  );
+  return res.data;
+}
+
 export async function updateBundle(
   oldCode: string,
   update: { bundle_code?: string; bundle_name?: string },

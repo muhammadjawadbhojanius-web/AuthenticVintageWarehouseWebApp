@@ -177,9 +177,27 @@ def update_bundle_posted(db: Session, bundle_code: str, posted: int):
     # 0 = draft, 1 = posted, 2 = sold. Clamp to the known range so a
     # bad caller can't wedge the DB into an undefined state.
     bundle.posted = max(0, min(2, int(posted)))
+    # Sold bundles have left the warehouse — clear the rack location so
+    # it doesn't appear occupied in the locations admin page.
+    if bundle.posted == 2:
+        bundle.location = None
     db.commit()
     db.refresh(bundle)
 
+    return bundle
+
+
+def update_bundle_location(db: Session, bundle_code: str, location):
+    bundle = get_bundle_by_code(db, bundle_code)
+    if not bundle:
+        return None
+    # Empty string normalises to NULL so the column stays sparse.
+    if location is None or (isinstance(location, str) and not location.strip()):
+        bundle.location = None
+    else:
+        bundle.location = location.strip().upper()
+    db.commit()
+    db.refresh(bundle)
     return bundle
 
 def get_user_by_id(db: Session, user_id: int):

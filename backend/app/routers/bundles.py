@@ -423,6 +423,31 @@ def change_bundle_posted(
     return bundle
 
 
+# ---------- UPDATE LOCATION (admin-set physical rack) ----------
+# Format "AV-NN" or "AVG-NN" — distinct from bundle_code ("AV-NNNN" /
+# "AVG-NNNN"). Empty string clears the location. Auth is advisory per
+# CLAUDE.md, so the gating lives in the admin UI.
+_LOCATION_RE = re.compile(r"^(AV|AVG)-\d{1,3}$", re.IGNORECASE)
+
+
+@router.patch("/{bundle_code}/location", response_model=schemas.BundleOut)
+def change_bundle_location(
+    bundle_code: str,
+    payload: schemas.BundleLocationUpdate,
+    db: Session = Depends(get_db),
+):
+    raw = (payload.location or "").strip()
+    if raw and not _LOCATION_RE.match(raw):
+        raise HTTPException(
+            status_code=400,
+            detail="Location must look like 'AV-01' or 'AVG-12'",
+        )
+    bundle = crud.update_bundle_location(db, bundle_code, raw or None)
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Bundle not found")
+    return bundle
+
+
 # ---------- ADD ITEM ----------
 @router.post("/{bundle_code}/items", response_model=schemas.BundleItemOut)
 def add_item(bundle_code: str, item: schemas.BundleItemCreate, db: Session = Depends(get_db)):

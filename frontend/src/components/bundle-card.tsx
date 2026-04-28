@@ -14,6 +14,10 @@ import {
   ThumbsDown,
   Check,
   AlertTriangle,
+  Image as ImageIcon,
+  Video as VideoIcon,
+  MapPin,
+  Gift,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -129,13 +133,34 @@ function formatDate(s?: string): string {
   }
 }
 
-/** Short badge label: "3 PHOTOS", "2 VIDEOS", "3 PHOTOS + 1 VIDEO", "NO MEDIA". */
-function mediaBadgeLabel(photos: number, videos: number): string {
-  if (photos === 0 && videos === 0) return "NO MEDIA";
-  const parts: string[] = [];
-  if (photos > 0) parts.push(`${photos} ${photos === 1 ? "PHOTO" : "PHOTOS"}`);
-  if (videos > 0) parts.push(`${videos} ${videos === 1 ? "VIDEO" : "VIDEOS"}`);
-  return parts.join(" + ");
+/**
+ * Compact icon-driven media badge content. Mobile screens can't fit the
+ * old text form ("1 PHOTO + 1 VIDEO") so we render an image icon + count
+ * and a video icon + count side-by-side. "NO MEDIA" stays textual since
+ * an empty icon row would read as "still loading".
+ */
+function MediaBadgeContent({ photos, videos }: { photos: number; videos: number }) {
+  if (photos === 0 && videos === 0) {
+    return <span>NO MEDIA</span>;
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {photos > 0 && (
+        <span className="inline-flex items-center gap-0.5">
+          <ImageIcon className="h-3 w-3" aria-hidden />
+          <span className="tabular-nums">{photos}</span>
+          <span className="sr-only">{photos === 1 ? "photo" : "photos"}</span>
+        </span>
+      )}
+      {videos > 0 && (
+        <span className="inline-flex items-center gap-0.5">
+          <VideoIcon className="h-3 w-3" aria-hidden />
+          <span className="tabular-nums">{videos}</span>
+          <span className="sr-only">{videos === 1 ? "video" : "videos"}</span>
+        </span>
+      )}
+    </span>
+  );
 }
 
 interface ThumbnailProps {
@@ -322,6 +347,11 @@ function BundleCardImpl({
     (s, i) => s + (i.number_of_pieces || 0),
     0
   );
+  const totalGift = (bundle.items ?? []).reduce(
+    (s, i) => s + (i.gift_pcs || 0),
+    0
+  );
+  const location = bundle.location?.trim();
 
   const showActionRow =
     !selectionMode &&
@@ -369,7 +399,9 @@ function BundleCardImpl({
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* Top row: code + pending indicator + media badge */}
+          {/* Top row: code + pending indicator + media badge (with optional
+              location pill stacked beneath the badge so the right column
+              always tracks "what / where" without crowding the title). */}
           <div className="flex items-start gap-2">
             <h3 className="min-w-0 flex-1 truncate text-base font-bold tracking-tight text-foreground">
               {bundle.bundle_code}
@@ -379,18 +411,33 @@ function BundleCardImpl({
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
               </span>
             )}
-            <span
-              className={cn(
-                "shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide",
-                isUploading
-                  ? "bg-warning/15 text-warning"
-                  : hasMedia
-                    ? "bg-success/15 text-success"
-                    : "bg-muted text-muted-foreground"
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              <span
+                className={cn(
+                  "rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide",
+                  isUploading
+                    ? "bg-warning/15 text-warning"
+                    : hasMedia
+                      ? "bg-success/15 text-success"
+                      : "bg-muted text-muted-foreground"
+                )}
+              >
+                {isUploading ? (
+                  <span>UPLOADING</span>
+                ) : (
+                  <MediaBadgeContent photos={photos} videos={videos} />
+                )}
+              </span>
+              {location && (
+                <span
+                  title="Warehouse location"
+                  className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[10px] font-bold tracking-wide text-primary"
+                >
+                  <MapPin className="h-3 w-3" aria-hidden />
+                  <span className="font-mono">{location}</span>
+                </span>
               )}
-            >
-              {isUploading ? "UPLOADING" : mediaBadgeLabel(photos, videos)}
-            </span>
+            </div>
           </div>
 
           {/* Italic quoted name */}
@@ -400,17 +447,27 @@ function BundleCardImpl({
             </p>
           )}
 
-          {/* Bottom metadata row: pieces count (left) + date (right) */}
+          {/* Bottom metadata row: pieces + gift count (left) + date (right). */}
           <div className="mt-auto flex items-end justify-between gap-2 pt-2 text-xs text-muted-foreground">
-            {totalPieces > 0 ? (
-              <span className="inline-flex items-center gap-1 font-medium">
-                <Layers className="h-3.5 w-3.5" />
-                <span className="tabular-nums">{totalPieces}</span>
-                <span>{totalPieces === 1 ? "piece" : "pieces"}</span>
-              </span>
-            ) : (
-              <span />
-            )}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              {totalPieces > 0 && (
+                <span className="inline-flex items-center gap-1 font-medium">
+                  <Layers className="h-3.5 w-3.5" />
+                  <span className="tabular-nums">{totalPieces}</span>
+                  <span>Pcs</span>
+                </span>
+              )}
+              {totalGift > 0 && (
+                <span
+                  className="inline-flex items-center gap-1 font-medium"
+                  title="Gift pieces"
+                >
+                  <Gift className="h-3.5 w-3.5" />
+                  <span className="tabular-nums">{totalGift}</span>
+                  <span>Pcs</span>
+                </span>
+              )}
+            </div>
             <span className="tabular-nums">{formatDate(bundle.created_at)}</span>
           </div>
         </div>

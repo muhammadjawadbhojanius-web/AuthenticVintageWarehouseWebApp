@@ -31,6 +31,8 @@ export interface Bundle {
   status: string;
   /** 0 = draft, 1 = posted. Togglable by Admin and Listing Executives. */
   posted: number;
+  /** Physical warehouse location, e.g. "AV-01" / "AVG-12". Admin-set. */
+  location?: string | null;
   created_at: string;
   items: BundleItem[];
   images: BundleImage[];

@@ -25,6 +25,10 @@ class Bundle(Base):
     # Executives from the bundle card. An idempotent ALTER TABLE in
     # main.py adds this column to pre-existing databases.
     posted = Column(Integer, default=0, nullable=False)
+    # Physical warehouse rack location, format "AV-NN" or "AVG-NN".
+    # Distinct from bundle_code (which is "AV-NNNN" / "AVG-NNNN").
+    # Multiple bundles can share a location. Admin-managed.
+    location = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
     items = relationship("BundleItem", back_populates="bundle")

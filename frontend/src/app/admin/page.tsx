@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Users, PackageSearch, Tags } from "lucide-react";
+import { ArrowLeft, Users, PackageSearch, Tags, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
@@ -60,6 +60,23 @@ export default function AdminHubPage() {
               <p className="font-semibold">Catalog Management</p>
               <p className="text-sm text-muted-foreground">
                 Add, approve, or remove brands and articles
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card
+          className="cursor-pointer hover:bg-accent/40"
+          onClick={() => router.push("/admin/bundle-locations")}
+        >
+          <CardContent className="flex items-center gap-4 pt-6">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+              <MapPin className="h-6 w-6 text-primary" />
+            </div>
+            <div>
+              <p className="font-semibold">Bundle Locations</p>
+              <p className="text-sm text-muted-foreground">
+                Assign warehouse rack locations (AV-NN / AVG-NN) to bundles
               </p>
             </div>
           </CardContent>
