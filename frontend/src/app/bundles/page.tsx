@@ -223,6 +223,8 @@ export default function BundlesPage() {
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
   const [warningFilter, setWarningFilter] = useState<WarningFilter>("all");
   const [filtersRestored, setFiltersRestored] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollRestoredRef = useRef(false);
   // Popover open/close + anchor rect for portal positioning.
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterRect, setFilterRect] = useState<DOMRect | null>(null);
@@ -268,6 +270,18 @@ export default function BundlesPage() {
     sessionStorage.setItem("bundles_media", mediaFilter);
     sessionStorage.setItem("bundles_warn", warningFilter);
   }, [filtersRestored, search, statusFilter, prefixFilter, mediaFilter, warningFilter]);
+
+  // Restore scroll position once after the list has rendered on return navigation.
+  useEffect(() => {
+    if (!bundlesQuery.isSuccess || !filtersRestored || scrollRestoredRef.current) return;
+    scrollRestoredRef.current = true;
+    const saved = sessionStorage.getItem("bundles_scroll");
+    if (!saved) return;
+    const y = parseInt(saved, 10);
+    if (!isNaN(y) && y > 0 && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = y;
+    }
+  }, [bundlesQuery.isSuccess, filtersRestored]);
 
   const isAdmin = role === "Admin";
   const isListingExec = role === "Listing Executives";
@@ -647,7 +661,7 @@ export default function BundlesPage() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4 pb-20">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 pb-20">
         {/* Search Bar & Refresh */}
         <div className="mx-auto mb-4 max-w-2xl flex gap-2">
           <div className="relative flex-1">
@@ -861,7 +875,10 @@ export default function BundlesPage() {
                       : undefined
                   }
                   onSelectionChange={(v) => toggleSelected(code, v)}
-                  onClick={() => router.push(`/bundles/${encodeURIComponent(code)}`)}
+                  onClick={() => {
+                    sessionStorage.setItem("bundles_scroll", String(scrollContainerRef.current?.scrollTop ?? 0));
+                    router.push(`/bundles/${encodeURIComponent(code)}`);
+                  }}
                   onDownload={() => handleOpenDownload(b)}
                   onDelete={() => setDeleteFor(code)}
                   onCopy={() => handleCopy(b)}

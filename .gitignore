@@ -51,3 +51,4 @@ compose.port-override.yml
 # --- graphify ---
 graphify-out/
 .graphify_*
+.graphify*
