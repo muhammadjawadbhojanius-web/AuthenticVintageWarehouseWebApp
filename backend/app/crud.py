@@ -47,7 +47,12 @@ from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException
 
 def create_bundle(db: Session, bundle_code: str, bundle_name: str = None):
-    bundle = models.Bundle(bundle_code=bundle_code, bundle_name=bundle_name)
+    # Pre-populate location from location_entries if a phantom entry already
+    # exists so the card immediately shows the right rack after creation.
+    existing_entry = db.get(models.LocationEntry, bundle_code.strip().upper())
+    location = existing_entry.location if existing_entry else None
+
+    bundle = models.Bundle(bundle_code=bundle_code, bundle_name=bundle_name, location=location)
     db.add(bundle)
     try:
         db.commit()
@@ -177,10 +182,13 @@ def update_bundle_posted(db: Session, bundle_code: str, posted: int):
     # 0 = draft, 1 = posted, 2 = sold. Clamp to the known range so a
     # bad caller can't wedge the DB into an undefined state.
     bundle.posted = max(0, min(2, int(posted)))
-    # Sold bundles have left the warehouse — clear the rack location so
-    # it doesn't appear occupied in the locations admin page.
+    # Sold bundles have left the warehouse — clear the rack location from
+    # both the bundle row and the authoritative location_entries table.
     if bundle.posted == 2:
         bundle.location = None
+        entry = db.get(models.LocationEntry, bundle.bundle_code)
+        if entry:
+            db.delete(entry)
     db.commit()
     db.refresh(bundle)
 
@@ -257,11 +265,16 @@ def delete_bundle(db: Session, bundle_code: str):
     bundle = get_bundle_by_code(db, bundle_code)
     if not bundle:
         return None
-    
+
     # Delete related items and images explicitly
     db.query(models.BundleItem).filter(models.BundleItem.bundle_id == bundle.id).delete()
     db.query(models.BundleImage).filter(models.BundleImage.bundle_id == bundle.id).delete()
-    
+
+    # Clear location_entries so the rack shows as free.
+    entry = db.get(models.LocationEntry, bundle_code)
+    if entry:
+        db.delete(entry)
+
     db.delete(bundle)
     db.commit()
     return bundle

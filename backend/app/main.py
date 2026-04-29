@@ -6,7 +6,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from . import models, database
 import os
-from .routers import users, bundles, media, templates, catalog
+from .routers import users, bundles, media, templates, catalog, locations
 
 # Disable default docs so we can serve them locally (no CDN required)
 app = FastAPI(title="Authentic Warehouse API", docs_url=None, redoc_url=None)
@@ -43,6 +43,13 @@ with database.engine.connect() as _conn:
         _conn.execute(_text("ALTER TABLE bundles ADD COLUMN posted INTEGER NOT NULL DEFAULT 0"))
     if "location" not in _cols:
         _conn.execute(_text("ALTER TABLE bundles ADD COLUMN location TEXT"))
+    # Authoritative location store — no FK so phantom codes are allowed.
+    _conn.execute(_text("""
+        CREATE TABLE IF NOT EXISTS location_entries (
+            bundle_code TEXT PRIMARY KEY,
+            location    TEXT NOT NULL
+        )
+    """))
     # Guarantee bundle_code uniqueness at the DB level. declared `unique=True`
     # on the model only applies to tables freshly created by create_all(); a
     # DB from before that annotation won't actually have the constraint,
@@ -121,3 +128,4 @@ app.include_router(bundles.router)
 app.include_router(media.router)
 app.include_router(templates.router)
 app.include_router(catalog.router)
+app.include_router(locations.router)

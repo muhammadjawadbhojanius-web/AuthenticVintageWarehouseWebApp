@@ -7,6 +7,7 @@ import { SettingsProvider } from "@/contexts/settings-context";
 import { UploadQueueProvider } from "@/contexts/upload-queue-context";
 import { ToastProvider } from "@/components/toaster";
 import { UploadQueueIndicator } from "@/components/upload-queue-indicator";
+import { AppFooter } from "@/components/app-footer";
 import { ErrorBoundary } from "@/components/error-boundary";
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -31,6 +32,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
               <ToastProvider>
                 {children}
                 <UploadQueueIndicator />
+                <AppFooter />
               </ToastProvider>
             </UploadQueueProvider>
           </AuthProvider>

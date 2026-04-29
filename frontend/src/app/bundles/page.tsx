@@ -617,7 +617,7 @@ export default function BundlesPage() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-4 pb-20">
         {/* Search Bar & Refresh */}
         <div className="mx-auto mb-4 max-w-2xl flex gap-2">
           <div className="relative flex-1">
@@ -848,7 +848,7 @@ export default function BundlesPage() {
       {canCreateBundle && (
         <button
           onClick={() => router.push("/bundles/new")}
-          className="fixed bottom-12 right-6 z-10 flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-primary-foreground shadow-lg transition-transform hover:scale-105"
+          className="fixed bottom-20 right-6 z-10 flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-primary-foreground shadow-lg transition-transform hover:scale-105"
         >
           <Plus className="h-5 w-5" /> Add Bundle
         </button>

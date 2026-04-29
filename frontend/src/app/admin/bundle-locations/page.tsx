@@ -15,6 +15,7 @@ import {
   ChevronUp,
   AlertTriangle,
   Copy,
+  Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,37 +24,53 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import { useAuthGuard } from "@/hooks/use-auth-guard";
+import { useAuth } from "@/contexts/auth-context";
 import { useToast } from "@/components/toaster";
-import { fetchBundles, updateBundleLocation } from "@/lib/queries";
+import {
+  fetchBundles,
+  fetchLocationEntries,
+  upsertLocationEntry,
+  deleteLocationEntry,
+  bulkUpsertLocationEntries,
+  type LocationEntry,
+} from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import type { Bundle } from "@/lib/types";
 
-// Format constraint shared with the backend validator: "AV-NN" or "AVG-NN".
-// 1–3 digits to leave headroom; backend uses the same pattern.
+// Shared format constraint (matches backend validator).
 const LOCATION_RE = /^(AV|AVG)-\d{1,3}$/i;
 
 export default function BundleLocationsPage() {
-  const { ready } = useAuthGuard({ requireRole: "Admin" });
+  const { ready } = useAuthGuard();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { role } = useAuth();
   const { toast } = useToast();
+  const isAdmin = role === "Admin";
 
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
   }, [search]);
 
-  const bundlesQuery = useQuery({
-    queryKey: ["bundles-locations", debouncedSearch],
-    queryFn: () =>
-      fetchBundles({ search: debouncedSearch || undefined }).then((all) =>
-        all.filter((b) => b.posted !== 2),
-      ),
+  // Authoritative source: location_entries (includes phantom codes).
+  const locationsQuery = useQuery({
+    queryKey: ["location-entries"],
+    queryFn: fetchLocationEntries,
     enabled: ready,
+  });
+
+  // Used only to know which codes exist in the DB (for yellow highlighting).
+  const bundlesQuery = useQuery({
+    queryKey: ["bundles"],
+    queryFn: () => fetchBundles({}),
+    enabled: ready,
+    staleTime: 30_000,
   });
 
   if (!ready) {
@@ -64,51 +81,57 @@ export default function BundleLocationsPage() {
     );
   }
 
-  const bundles: Bundle[] = bundlesQuery.data ?? [];
+  const allEntries: LocationEntry[] = locationsQuery.data ?? [];
+  const dbCodes = new Set((bundlesQuery.data ?? []).map((b: Bundle) => b.bundle_code));
 
-  // Group by location so the warehouse layout is readable. Unassigned
-  // bundles get their own bucket at the top so admins immediately see
-  // what still needs a location.
+  // Client-side search across bundle_code.
+  const filtered = debouncedSearch
+    ? allEntries.filter((e) =>
+        e.bundle_code.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+        e.location.toLowerCase().includes(debouncedSearch.toLowerCase()),
+      )
+    : allEntries;
+
+  // Group by location, sorted numerically. Unassigned bucket not needed
+  // here because every entry in location_entries has a location.
   const groups = (() => {
-    const map = new Map<string, Bundle[]>();
-    for (const b of bundles) {
-      const key = (b.location || "").trim() || "__unassigned__";
-      const arr = map.get(key) ?? [];
-      arr.push(b);
-      map.set(key, arr);
+    const map = new Map<string, LocationEntry[]>();
+    for (const e of filtered) {
+      const arr = map.get(e.location) ?? [];
+      arr.push(e);
+      map.set(e.location, arr);
     }
-    const entries = Array.from(map.entries()).sort(([a], [b]) => {
-      if (a === "__unassigned__") return -1;
-      if (b === "__unassigned__") return 1;
-      return a.localeCompare(b, undefined, { numeric: true });
-    });
-    return entries;
+    return Array.from(map.entries()).sort(([a], [b]) =>
+      a.localeCompare(b, undefined, { numeric: true }),
+    );
   })();
 
   return (
-    <div className="min-h-screen pb-10">
+    <div className="min-h-screen pb-20">
       <header className="sticky top-0 z-30 flex items-center gap-2 border-b bg-background/80 px-4 py-3 backdrop-blur">
         <Button variant="ghost" size="icon" onClick={() => router.back()}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <h1 className="font-semibold">Bundle Locations</h1>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="ml-auto"
-          onClick={() => bundlesQuery.refetch()}
-        >
-          <RefreshCw
-            className={cn("h-4 w-4", bundlesQuery.isFetching && "animate-spin")}
-          />
-        </Button>
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => locationsQuery.refetch()}
+          >
+            <RefreshCw
+              className={cn("h-4 w-4", locationsQuery.isFetching && "animate-spin")}
+            />
+          </Button>
+        </div>
       </header>
 
       <div className="mx-auto max-w-2xl space-y-4 p-4">
+        {/* Search */}
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Search by bundle code, name, brand, or article…"
+            placeholder="Search by bundle code or location…"
             className="pl-10"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -125,106 +148,183 @@ export default function BundleLocationsPage() {
         </div>
 
         <p className="text-xs text-muted-foreground">
-          Locations look like <code className="font-mono">AV-01</code> or{" "}
-          <code className="font-mono">AVG-12</code>. Multiple bundles can share
-          a location. Empty the field and save to clear.
+          Locations: <code className="font-mono">AV-01</code> or{" "}
+          <code className="font-mono">AVG-12</code>. Bundle codes not yet in
+          the database are shown in{" "}
+          <span className="font-semibold text-yellow-500">yellow</span>.
         </p>
 
-        {/* Bulk assign card */}
-        <Card>
-          <CardContent className="pt-4 pb-3 space-y-3">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between text-sm font-semibold"
-              onClick={() => setBulkOpen((v) => !v)}
-            >
-              <span>Bulk Assign</span>
-              {bulkOpen ? (
-                <ChevronUp className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+        {/* Add single entry — admin only */}
+        {isAdmin && (
+          <Card>
+            <CardContent className="pt-4 pb-3 space-y-3">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between text-sm font-semibold"
+                onClick={() => setAddOpen((v) => !v)}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Plus className="h-4 w-4" /> Add Entry
+                </span>
+                {addOpen ? (
+                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                )}
+              </button>
+              {addOpen && (
+                <AddEntryForm
+                  dbCodes={dbCodes}
+                  onSaved={(entry) => {
+                    queryClient.setQueryData<LocationEntry[]>(
+                      ["location-entries"],
+                      (old) => {
+                        if (!old) return [entry];
+                        const idx = old.findIndex((e) => e.bundle_code === entry.bundle_code);
+                        return idx >= 0
+                          ? old.map((e, i) => (i === idx ? entry : e))
+                          : [...old, entry];
+                      },
+                    );
+                    queryClient.setQueriesData<Bundle[]>(
+                      { queryKey: ["bundles"] },
+                      (old) =>
+                        Array.isArray(old)
+                          ? old.map((b) =>
+                              b.bundle_code === entry.bundle_code
+                                ? { ...b, location: entry.location }
+                                : b,
+                            )
+                          : old,
+                    );
+                    toast({ title: `${entry.bundle_code} → ${entry.location}`, variant: "success" });
+                  }}
+                />
               )}
-            </button>
-            {bulkOpen && (
-              <BulkAssignPanel
-                bundles={bundles}
-                onApplied={(updates) => {
-                  const patch = (old: Bundle[] | undefined) =>
-                    Array.isArray(old)
-                      ? old.map((x) => {
-                          const next = updates.get(x.bundle_code);
-                          return next !== undefined ? { ...x, location: next } : x;
-                        })
-                      : old;
-                  queryClient.setQueriesData<Bundle[]>({ queryKey: ["bundles"] }, patch);
-                  queryClient.setQueriesData<Bundle[]>({ queryKey: ["bundles-locations"] }, patch);
-                  for (const code of Array.from(updates.keys())) {
-                    queryClient.invalidateQueries({ queryKey: ["bundle", code] });
-                  }
-                }}
-              />
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        )}
 
-        {bundlesQuery.isLoading && (
+        {/* Bulk assign — admin only */}
+        {isAdmin && (
+          <Card>
+            <CardContent className="pt-4 pb-3 space-y-3">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between text-sm font-semibold"
+                onClick={() => setBulkOpen((v) => !v)}
+              >
+                <span>Bulk Assign</span>
+                {bulkOpen ? (
+                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                )}
+              </button>
+              {bulkOpen && (
+                <BulkAssignPanel
+                  onApplied={(saved) => {
+                    queryClient.setQueryData<LocationEntry[]>(
+                      ["location-entries"],
+                      (old) => {
+                        const map = new Map((old ?? []).map((e) => [e.bundle_code, e]));
+                        for (const e of saved) map.set(e.bundle_code, e);
+                        return Array.from(map.values());
+                      },
+                    );
+                    queryClient.setQueriesData<Bundle[]>(
+                      { queryKey: ["bundles"] },
+                      (old) => {
+                        if (!Array.isArray(old)) return old;
+                        const byCode = new Map(saved.map((e) => [e.bundle_code, e.location]));
+                        return old.map((b) => {
+                          const loc = byCode.get(b.bundle_code);
+                          return loc !== undefined ? { ...b, location: loc } : b;
+                        });
+                      },
+                    );
+                  }}
+                />
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {locationsQuery.isLoading && (
           <div className="flex justify-center py-10">
             <Spinner />
           </div>
         )}
 
-        {bundlesQuery.isSuccess && bundles.length === 0 && (
+        {locationsQuery.isSuccess && allEntries.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              {search ? "No bundles match your search." : "No bundles yet."}
+              No location entries yet. Use Add Entry or Bulk Assign above.
             </CardContent>
           </Card>
         )}
 
-        {groups.map(([key, list]) => (
-          <Card key={key}>
+        {locationsQuery.isSuccess && allEntries.length > 0 && filtered.length === 0 && (
+          <Card>
+            <CardContent className="py-8 text-center text-sm text-muted-foreground">
+              No entries match &ldquo;{debouncedSearch}&rdquo;.
+            </CardContent>
+          </Card>
+        )}
+
+        {groups.map(([loc, list]) => (
+          <Card key={loc}>
             <CardContent className="space-y-2 pt-5">
               <div className="flex items-center gap-2">
-                <MapPin
-                  className={cn(
-                    "h-4 w-4",
-                    key === "__unassigned__"
-                      ? "text-muted-foreground"
-                      : "text-primary",
-                  )}
-                />
-                <h2 className="text-sm font-semibold">
-                  {key === "__unassigned__" ? "Unassigned" : key}
-                </h2>
-                <span className="text-xs text-muted-foreground">
-                  ({list.length})
-                </span>
-                {key !== "__unassigned__" && (
-                  <CopyCodesButton codes={list.map((b) => b.bundle_code)} location={key} />
-                )}
+                <MapPin className="h-4 w-4 text-primary" />
+                <h2 className="text-sm font-semibold">{loc}</h2>
+                <span className="text-xs text-muted-foreground">({list.length})</span>
+                <CopyCodesButton codes={list.map((e) => e.bundle_code)} location={loc} />
               </div>
-              {list.map((b) => (
-                <BundleRow
-                  key={b.bundle_code}
-                  bundle={b}
-                  onSaved={(next) => {
-                    const patch = (old: Bundle[] | undefined) =>
-                      Array.isArray(old)
-                        ? old.map((x) =>
-                            x.bundle_code === b.bundle_code
-                              ? { ...x, location: next }
-                              : x,
-                          )
-                        : old;
-                    queryClient.setQueriesData<Bundle[]>({ queryKey: ["bundles"] }, patch);
-                    queryClient.setQueriesData<Bundle[]>({ queryKey: ["bundles-locations"] }, patch);
-                    queryClient.invalidateQueries({ queryKey: ["bundle", b.bundle_code] });
-                    toast({
-                      title: next
-                        ? `${b.bundle_code} → ${next}`
-                        : `Cleared location for ${b.bundle_code}`,
-                      variant: "success",
-                    });
+              {list.map((entry) => (
+                <EntryRow
+                  key={entry.bundle_code}
+                  entry={entry}
+                  inDb={dbCodes.has(entry.bundle_code)}
+                  canEdit={isAdmin}
+                  onSaved={(updated) => {
+                    queryClient.setQueryData<LocationEntry[]>(
+                      ["location-entries"],
+                      (old) =>
+                        (old ?? []).map((e) =>
+                          e.bundle_code === entry.bundle_code ? updated : e,
+                        ),
+                    );
+                    queryClient.setQueriesData<Bundle[]>(
+                      { queryKey: ["bundles"] },
+                      (old) =>
+                        Array.isArray(old)
+                          ? old.map((b) =>
+                              b.bundle_code === updated.bundle_code
+                                ? { ...b, location: updated.location }
+                                : b,
+                            )
+                          : old,
+                    );
+                    toast({ title: `${updated.bundle_code} → ${updated.location}`, variant: "success" });
+                  }}
+                  onDeleted={() => {
+                    queryClient.setQueryData<LocationEntry[]>(
+                      ["location-entries"],
+                      (old) => (old ?? []).filter((e) => e.bundle_code !== entry.bundle_code),
+                    );
+                    queryClient.setQueriesData<Bundle[]>(
+                      { queryKey: ["bundles"] },
+                      (old) =>
+                        Array.isArray(old)
+                          ? old.map((b) =>
+                              b.bundle_code === entry.bundle_code
+                                ? { ...b, location: null }
+                                : b,
+                            )
+                          : old,
+                    );
+                    toast({ title: `Cleared location for ${entry.bundle_code}`, variant: "success" });
                   }}
                 />
               ))}
@@ -237,7 +337,206 @@ export default function BundleLocationsPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Copy codes button — copies the bundle codes for a location to clipboard.
+// Add single entry form
+// ---------------------------------------------------------------------------
+
+interface AddEntryFormProps {
+  dbCodes: Set<string>;
+  onSaved: (entry: LocationEntry) => void;
+}
+
+function AddEntryForm({ dbCodes, onSaved }: AddEntryFormProps) {
+  const { toast } = useToast();
+  const [code, setCode] = useState("");
+  const [location, setLocation] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const trimCode = code.trim().toUpperCase();
+  const trimLoc = location.trim().toUpperCase();
+  const locValid = LOCATION_RE.test(trimLoc);
+  const codeValid = trimCode.length > 0;
+  const isPhantom = codeValid && !dbCodes.has(trimCode);
+
+  const handleSave = async () => {
+    if (busy || !codeValid || !locValid) return;
+    setBusy(true);
+    try {
+      const entry = await upsertLocationEntry(trimCode, trimLoc);
+      onSaved(entry);
+      setCode("");
+      setLocation("");
+    } catch {
+      toast({ title: "Failed to save", variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <div className="flex-1 space-y-1">
+          <Input
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSave()}
+            placeholder="AV-0001"
+            className={cn(
+              "font-mono text-sm uppercase",
+              isPhantom && "text-yellow-500",
+            )}
+            disabled={busy}
+          />
+          {isPhantom && (
+            <p className="text-[10px] text-yellow-500">Not in database</p>
+          )}
+        </div>
+        <Input
+          value={location}
+          onChange={(e) => setLocation(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleSave()}
+          placeholder="AV-01"
+          className={cn(
+            "w-28 text-center font-mono text-sm uppercase",
+            trimLoc && !locValid && "border-destructive focus-visible:ring-destructive",
+          )}
+          disabled={busy}
+        />
+        <Button
+          disabled={busy || !codeValid || !locValid}
+          onClick={handleSave}
+          className="shrink-0"
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-entry row (edit location or clear)
+// ---------------------------------------------------------------------------
+
+interface EntryRowProps {
+  entry: LocationEntry;
+  inDb: boolean;
+  canEdit: boolean;
+  onSaved: (updated: LocationEntry) => void;
+  onDeleted: () => void;
+}
+
+function EntryRow({ entry, inDb, canEdit, onSaved, onDeleted }: EntryRowProps) {
+  const { toast } = useToast();
+  const [value, setValue] = useState(entry.location);
+  const [busy, setBusy] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+
+  useEffect(() => {
+    setValue(entry.location);
+  }, [entry.location]);
+
+  const trimmed = value.trim().toUpperCase();
+  const dirty = trimmed !== entry.location.toUpperCase();
+  const valid = LOCATION_RE.test(trimmed);
+
+  const handleSave = async () => {
+    if (busy || !dirty || !valid) return;
+    setBusy(true);
+    try {
+      const updated = await upsertLocationEntry(entry.bundle_code, trimmed);
+      onSaved(updated);
+      setJustSaved(true);
+      window.setTimeout(() => setJustSaved(false), 1500);
+    } catch {
+      toast({ title: "Failed to save", variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await deleteLocationEntry(entry.bundle_code);
+      onDeleted();
+    } catch {
+      toast({ title: "Failed to clear location", variant: "error" });
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <p
+          className={cn(
+            "truncate font-mono text-sm font-semibold",
+            !inDb && "text-yellow-500",
+          )}
+          title={!inDb ? "Not in database" : undefined}
+        >
+          {entry.bundle_code}
+          {!inDb && (
+            <span className="ml-1.5 text-[10px] font-normal normal-case">
+              (not in DB)
+            </span>
+          )}
+        </p>
+      </div>
+      {canEdit ? (
+        <>
+          <Input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); handleSave(); }
+            }}
+            placeholder="AV-01"
+            className={cn(
+              "h-9 w-28 text-center font-mono text-sm uppercase",
+              !valid && "border-destructive focus-visible:ring-destructive",
+            )}
+            disabled={busy}
+          />
+          <Button
+            size="sm"
+            variant={dirty ? "default" : "outline"}
+            disabled={!dirty || busy || !valid}
+            onClick={handleSave}
+            className="shrink-0"
+          >
+            {busy && dirty ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : justSaved ? (
+              <Check className="h-4 w-4" />
+            ) : (
+              "Save"
+            )}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={handleDelete}
+            className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            title="Clear location"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </>
+      ) : (
+        <span className="font-mono text-sm font-semibold text-muted-foreground">
+          {entry.location}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Copy codes button
 // ---------------------------------------------------------------------------
 
 function CopyCodesButton({ codes, location }: { codes: string[]; location: string }) {
@@ -245,23 +544,21 @@ function CopyCodesButton({ codes, location }: { codes: string[]; location: strin
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    const text = codes.map((c) => `${c} | ${location}`).join("\n");
     try {
-      await navigator.clipboard.writeText(codes.map((c) => `${c} | ${location}`).join("\n"));
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      await navigator.clipboard.writeText(text);
     } catch {
-      // Fallback for browsers that block clipboard without HTTPS
       const ta = document.createElement("textarea");
-      ta.value = codes.map((c) => `${c} | ${location}`).join("\n");
+      ta.value = text;
       ta.style.position = "fixed";
       ta.style.opacity = "0";
       document.body.appendChild(ta);
       ta.select();
       document.execCommand("copy");
       document.body.removeChild(ta);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
     }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
   };
 
   return (
@@ -287,18 +584,8 @@ function CopyCodesButton({ codes, location }: { codes: string[]; location: strin
 }
 
 // ---------------------------------------------------------------------------
-// Bulk assign panel
+// Bulk assign panel — accepts any code, DB or phantom
 // ---------------------------------------------------------------------------
-//
-// Format (one per line):  BUNDLE_CODE LOCATION
-// Separator between code and location: one or more spaces, tabs, or a comma.
-// Examples:
-//   AV-0001 AV-01
-//   AVG-0023, AVG-03
-//   AV-0045	AV-02
-//
-// Lines starting with # are treated as comments and ignored.
-// Blank lines are skipped.
 
 interface ParsedLine {
   raw: string;
@@ -306,35 +593,25 @@ interface ParsedLine {
   code?: string;
   location?: string;
   error?: string;
+  isPhantom?: boolean;
 }
 
-function parseBulkText(text: string, knownCodes: Set<string>): ParsedLine[] {
+function parseBulkText(text: string): ParsedLine[] {
   return text
     .split("\n")
     .map((raw, i) => {
       const lineNum = i + 1;
       const trimmed = raw.trim();
       if (!trimmed || trimmed.startsWith("#")) return null;
-      // Split on first whitespace or comma sequence
       const parts = trimmed.split(/[\s,]+/, 2);
       if (parts.length < 2) {
-        return {
-          raw,
-          lineNum,
-          error: "Expected: BUNDLE_CODE LOCATION",
-        };
+        return { raw, lineNum, error: "Expected: BUNDLE_CODE LOCATION" };
       }
       const code = parts[0].toUpperCase();
       const location = parts[1].toUpperCase();
-      if (!knownCodes.has(code)) {
-        return { raw, lineNum, code, location, error: `Bundle "${code}" not found` };
-      }
       if (!LOCATION_RE.test(location)) {
         return {
-          raw,
-          lineNum,
-          code,
-          location,
+          raw, lineNum, code, location,
           error: `Invalid location "${location}" — use AV-01 or AVG-12`,
         };
       }
@@ -344,56 +621,64 @@ function parseBulkText(text: string, knownCodes: Set<string>): ParsedLine[] {
 }
 
 interface BulkAssignPanelProps {
-  bundles: Bundle[];
-  onApplied: (updates: Map<string, string | null>) => void;
+  onApplied: (saved: LocationEntry[]) => void;
 }
 
-function BulkAssignPanel({ bundles, onApplied }: BulkAssignPanelProps) {
+function BulkAssignPanel({ onApplied }: BulkAssignPanelProps) {
   const { toast } = useToast();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const knownCodes = new Set(bundles.map((b) => b.bundle_code));
-  const parsed = text.trim() ? parseBulkText(text, knownCodes) : [];
-  const valid = parsed.filter((l) => !l.error);
+  // We still fetch bundles here to show the phantom marker in preview.
+  const bundlesQuery = useQuery({
+    queryKey: ["bundles"],
+    queryFn: () => fetchBundles({}),
+    staleTime: 30_000,
+  });
+  const dbCodes = new Set((bundlesQuery.data ?? []).map((b: Bundle) => b.bundle_code));
+
+  const parsed = text.trim() ? parseBulkText(text) : [];
+  const valid = parsed
+    .filter((l) => !l.error)
+    .map((l) => ({ ...l, isPhantom: !dbCodes.has(l.code!) }));
   const errors = parsed.filter((l) => l.error);
 
   const handleApply = async () => {
     if (busy || valid.length === 0) return;
     setBusy(true);
-    const results = await Promise.allSettled(
-      valid.map((l) => updateBundleLocation(l.code!, l.location!)),
-    );
-    const succeeded = results.filter((r) => r.status === "fulfilled").length;
-    const failed = results.filter((r) => r.status === "rejected").length;
-
-    const updates = new Map<string, string | null>();
-    valid.forEach((l, idx) => {
-      if (results[idx].status === "fulfilled") {
-        updates.set(l.code!, l.location!);
+    try {
+      const result = await bulkUpsertLocationEntries(
+        valid.map((l) => ({ bundle_code: l.code!, location: l.location! })),
+      );
+      onApplied(result.saved);
+      const failed = result.errors.length;
+      if (failed === 0) {
+        toast({
+          title: `Assigned ${result.saved.length} location${result.saved.length === 1 ? "" : "s"}`,
+          variant: "success",
+        });
+        setText("");
+      } else {
+        toast({
+          title: `${result.saved.length} assigned, ${failed} failed`,
+          variant: "warning",
+        });
       }
-    });
-    onApplied(updates);
-
-    if (failed === 0) {
-      toast({ title: `Assigned ${succeeded} location${succeeded === 1 ? "" : "s"}`, variant: "success" });
-      setText("");
-    } else {
-      toast({
-        title: `${succeeded} assigned, ${failed} failed`,
-        variant: "warning",
-      });
+    } catch {
+      toast({ title: "Bulk assign failed", variant: "error" });
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   };
 
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
         One entry per line:{" "}
-        <code className="font-mono">BUNDLE_CODE LOCATION</code>
-        {" "}— e.g.{" "}
-        <code className="font-mono">AV-0001 AV-01</code>
+        <code className="font-mono">BUNDLE_CODE LOCATION</code> — e.g.{" "}
+        <code className="font-mono">AV-0001 AV-01</code>.{" "}
+        Codes not in the database are allowed and shown in{" "}
+        <span className="font-semibold text-yellow-500">yellow</span>.
       </p>
       <Textarea
         value={text}
@@ -404,20 +689,22 @@ function BulkAssignPanel({ bundles, onApplied }: BulkAssignPanelProps) {
         className="font-mono text-sm"
       />
 
-      {/* Live parse preview */}
       {parsed.length > 0 && (
         <div className="space-y-1 rounded-md border bg-muted/30 p-2 text-xs">
           {valid.length > 0 && (
             <p className="font-semibold text-success">
               {valid.length} valid assignment{valid.length === 1 ? "" : "s"}
+              {valid.some((l) => l.isPhantom) && (
+                <span className="ml-1 font-normal text-yellow-500">
+                  ({valid.filter((l) => l.isPhantom).length} not in DB)
+                </span>
+              )}
             </p>
           )}
           {errors.map((l) => (
             <div key={l.lineNum} className="flex items-start gap-1.5 text-destructive">
               <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-              <span>
-                Line {l.lineNum}: {l.error}
-              </span>
+              <span>Line {l.lineNum}: {l.error}</span>
             </div>
           ))}
         </div>
@@ -436,25 +723,19 @@ function BulkAssignPanel({ bundles, onApplied }: BulkAssignPanelProps) {
           )}
         </Button>
         {text.trim() && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setText("")}
-            disabled={busy}
-          >
+          <Button variant="outline" size="sm" onClick={() => setText("")} disabled={busy}>
             Clear
           </Button>
         )}
       </div>
 
-      {/* Summary of what will be set — collapsed once > 5 rows to save space */}
       {valid.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {valid.slice(0, 8).map((l) => (
             <Badge
               key={l.code}
               variant="outline"
-              className="font-mono text-xs"
+              className={cn("font-mono text-xs", l.isPhantom && "border-yellow-500/50 text-yellow-500")}
             >
               {l.code} → {l.location}
             </Badge>
@@ -466,98 +747,6 @@ function BulkAssignPanel({ bundles, onApplied }: BulkAssignPanelProps) {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-interface BundleRowProps {
-  bundle: Bundle;
-  onSaved: (next: string | null) => void;
-}
-
-function BundleRow({ bundle, onSaved }: BundleRowProps) {
-  const { toast } = useToast();
-  const initial = bundle.location ?? "";
-  const [value, setValue] = useState(initial);
-  const [busy, setBusy] = useState(false);
-  const [justSaved, setJustSaved] = useState(false);
-
-  // Sync if the parent's bundle prop changes (e.g., after a refetch).
-  useEffect(() => {
-    setValue(bundle.location ?? "");
-  }, [bundle.location]);
-
-  const trimmed = value.trim().toUpperCase();
-  const dirty = trimmed !== (initial || "").toUpperCase();
-  const valid = trimmed === "" || LOCATION_RE.test(trimmed);
-
-  const handleSave = async () => {
-    if (busy || !dirty) return;
-    if (!valid) {
-      toast({
-        title: "Invalid location",
-        description: "Use the format AV-01 or AVG-12.",
-        variant: "error",
-      });
-      return;
-    }
-    setBusy(true);
-    try {
-      await updateBundleLocation(bundle.bundle_code, trimmed || null);
-      onSaved(trimmed || null);
-      setJustSaved(true);
-      window.setTimeout(() => setJustSaved(false), 1500);
-    } catch {
-      toast({ title: "Failed to save location", variant: "error" });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="flex items-center gap-2 rounded-md border px-3 py-2">
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-mono text-sm font-semibold">
-          {bundle.bundle_code}
-        </p>
-        {bundle.bundle_name && (
-          <p className="truncate text-xs italic text-muted-foreground">
-            &lsquo;{bundle.bundle_name}&rsquo;
-          </p>
-        )}
-      </div>
-      <Input
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            handleSave();
-          }
-        }}
-        placeholder="AV-01"
-        // Allow lowercase typing; we uppercase on save. Width fits the format.
-        className={cn(
-          "h-9 w-28 text-center font-mono text-sm uppercase",
-          !valid && "border-destructive focus-visible:ring-destructive",
-        )}
-        disabled={busy}
-      />
-      <Button
-        size="sm"
-        variant={dirty ? "default" : "outline"}
-        disabled={!dirty || busy || !valid}
-        onClick={handleSave}
-        className="shrink-0"
-      >
-        {busy ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : justSaved ? (
-          <Check className="h-4 w-4" />
-        ) : (
-          "Save"
-        )}
-      </Button>
     </div>
   );
 }

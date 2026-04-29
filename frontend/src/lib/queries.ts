@@ -386,6 +386,42 @@ export async function mergeArticle(sourceId: number, targetId: number): Promise<
   return res.data;
 }
 
+// ---------------------------------------------------------------------------
+// Location entries — authoritative rack assignments (DB + phantom codes)
+// ---------------------------------------------------------------------------
+
+export interface LocationEntry {
+  bundle_code: string;
+  location: string;
+}
+
+export async function fetchLocationEntries(): Promise<LocationEntry[]> {
+  const res = await api().get<LocationEntry[]>("/locations/");
+  return res.data;
+}
+
+export async function upsertLocationEntry(
+  bundleCode: string,
+  location: string,
+): Promise<LocationEntry> {
+  const res = await api().put<LocationEntry>(
+    `/locations/${encodeURIComponent(bundleCode)}`,
+    { location },
+  );
+  return res.data;
+}
+
+export async function bulkUpsertLocationEntries(
+  entries: { bundle_code: string; location: string }[],
+): Promise<{ saved: LocationEntry[]; errors: { bundle_code: string; error: string }[] }> {
+  const res = await api().post("/locations/bulk", { entries });
+  return res.data;
+}
+
+export async function deleteLocationEntry(bundleCode: string): Promise<void> {
+  await api().delete(`/locations/${encodeURIComponent(bundleCode)}`);
+}
+
 // Health
 export async function checkHealth(): Promise<boolean> {
   try {

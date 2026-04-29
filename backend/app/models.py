@@ -80,6 +80,19 @@ class Article(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class LocationEntry(Base):
+    """Physical warehouse rack assignments.
+
+    No FK to bundles — any bundle code (in-DB or not yet entered) can have
+    a location. Bundle.location is kept in sync as a denormalised read cache
+    for the card display; this table is the authoritative source.
+    """
+    __tablename__ = "location_entries"
+
+    bundle_code = Column(String, primary_key=True)
+    location = Column(String, nullable=False)
+
+
 class UploadJob(Base):
     """Tracks a chunked upload from init through processing."""
     __tablename__ = "upload_jobs"
