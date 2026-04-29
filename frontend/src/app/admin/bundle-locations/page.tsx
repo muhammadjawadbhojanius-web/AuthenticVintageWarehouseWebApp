@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   Copy,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useAuthGuard } from "@/hooks/use-auth-guard";
 import { useAuth } from "@/contexts/auth-context";
 import { useToast } from "@/components/toaster";
@@ -52,6 +54,7 @@ export default function BundleLocationsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -105,6 +108,8 @@ export default function BundleLocationsPage() {
       a.localeCompare(b, undefined, { numeric: true }),
     );
   })();
+
+  const existingCodes = new Set(allEntries.map((e) => e.bundle_code));
 
   return (
     <div className="min-h-screen pb-20">
@@ -242,6 +247,48 @@ export default function BundleLocationsPage() {
                           return loc !== undefined ? { ...b, location: loc } : b;
                         });
                       },
+                    );
+                  }}
+                />
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Bulk delete — admin only */}
+        {isAdmin && (
+          <Card>
+            <CardContent className="pt-4 pb-3 space-y-3">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between text-sm font-semibold"
+                onClick={() => setBulkDeleteOpen((v) => !v)}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Trash2 className="h-4 w-4" /> Bulk Delete
+                </span>
+                {bulkDeleteOpen ? (
+                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                )}
+              </button>
+              {bulkDeleteOpen && (
+                <BulkDeletePanel
+                  existingCodes={existingCodes}
+                  onDeleted={(codes) => {
+                    queryClient.setQueryData<LocationEntry[]>(
+                      ["location-entries"],
+                      (old) => (old ?? []).filter((e) => !codes.includes(e.bundle_code)),
+                    );
+                    queryClient.setQueriesData<Bundle[]>(
+                      { queryKey: ["bundles"] },
+                      (old) =>
+                        Array.isArray(old)
+                          ? old.map((b) =>
+                              codes.includes(b.bundle_code) ? { ...b, location: null } : b,
+                            )
+                          : old,
                     );
                   }}
                 />
@@ -580,6 +627,178 @@ function CopyCodesButton({ codes, location }: { codes: string[]; location: strin
         </>
       )}
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bulk delete panel — paste codes, preview what will be cleared, confirm
+// ---------------------------------------------------------------------------
+
+interface BulkDeletePanelProps {
+  existingCodes: Set<string>;
+  onDeleted: (codes: string[]) => void;
+}
+
+function BulkDeletePanel({ existingCodes, onDeleted }: BulkDeletePanelProps) {
+  const { toast } = useToast();
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const parsed = text.trim()
+    ? text
+        .split("\n")
+        .flatMap((line, i) => {
+          const code = line.trim().toUpperCase();
+          if (!code || code.startsWith("#")) return [];
+          return [{ code, lineNum: i + 1, hasEntry: existingCodes.has(code) }];
+        })
+    : ([] as { code: string; lineNum: number; hasEntry: boolean }[]);
+
+  // Deduplicate by code — keep first occurrence.
+  const seen = new Set<string>();
+  const deduped = parsed.filter(({ code }) => {
+    if (seen.has(code)) return false;
+    seen.add(code);
+    return true;
+  });
+
+  const toDelete = deduped.filter((l) => l.hasEntry);
+  const notFound = deduped.filter((l) => !l.hasEntry);
+
+  const handleDelete = async () => {
+    if (busy || toDelete.length === 0) return;
+    setBusy(true);
+    const codes = toDelete.map((l) => l.code);
+    setConfirmOpen(false);
+    try {
+      const results = await Promise.allSettled(codes.map((c) => deleteLocationEntry(c)));
+      const failed = results.filter((r) => r.status === "rejected").length;
+      const succeeded = codes.filter((_, i) => results[i].status === "fulfilled");
+      onDeleted(succeeded);
+      if (failed === 0) {
+        toast({
+          title: `Cleared ${codes.length} location${codes.length === 1 ? "" : "s"}`,
+          variant: "success",
+        });
+        setText("");
+      } else {
+        toast({
+          title: `Cleared ${codes.length - failed} of ${codes.length}`,
+          description: `${failed} failed`,
+          variant: "warning",
+        });
+      }
+    } catch {
+      toast({ title: "Bulk delete failed", variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        One bundle code per line. Codes with no location entry are ignored.
+      </p>
+      <Textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={"AV-0001\nAVG-0023\nAV-0045"}
+        rows={5}
+        disabled={busy}
+        className="font-mono text-sm"
+      />
+
+      {deduped.length > 0 && (
+        <div className="space-y-1 rounded-md border bg-muted/30 p-2 text-xs">
+          {toDelete.length > 0 && (
+            <p className="font-semibold text-destructive">
+              {toDelete.length} entr{toDelete.length === 1 ? "y" : "ies"} will be cleared
+            </p>
+          )}
+          {notFound.length > 0 && (
+            <p className="text-muted-foreground">
+              {notFound.length} code{notFound.length === 1 ? "" : "s"} have no location — will be skipped
+            </p>
+          )}
+        </div>
+      )}
+
+      {toDelete.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {toDelete.slice(0, 8).map((l) => (
+            <Badge
+              key={l.code}
+              variant="outline"
+              className="border-destructive/40 font-mono text-xs text-destructive"
+            >
+              {l.code}
+            </Badge>
+          ))}
+          {toDelete.length > 8 && (
+            <Badge variant="outline" className="text-xs text-muted-foreground">
+              +{toDelete.length - 8} more
+            </Badge>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <Button
+          variant="destructive"
+          onClick={() => setConfirmOpen(true)}
+          disabled={busy || toDelete.length === 0}
+          className="flex-1"
+        >
+          {busy ? (
+            <><Loader2 className="h-4 w-4 animate-spin" /> Deleting…</>
+          ) : (
+            <>Delete {toDelete.length > 0 ? toDelete.length : ""} Entr{toDelete.length === 1 ? "y" : "ies"}</>
+          )}
+        </Button>
+        {text.trim() && (
+          <Button variant="outline" size="sm" onClick={() => setText("")} disabled={busy}>
+            Clear
+          </Button>
+        )}
+      </div>
+
+      <Dialog open={confirmOpen} onOpenChange={(v) => !v && setConfirmOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Delete {toDelete.length} location {toDelete.length === 1 ? "entry" : "entries"}?
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              This clears the rack assignment for the bundles below. The bundles themselves are not deleted.
+            </p>
+            <div className="max-h-[40vh] overflow-y-auto rounded-md border bg-muted/20 p-2">
+              <div className="flex flex-wrap gap-1.5">
+                {toDelete.map((l) => (
+                  <span
+                    key={l.code}
+                    className="inline-flex items-center rounded-md border bg-card px-2 py-0.5 font-mono text-xs font-semibold"
+                  >
+                    {l.code}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDelete} disabled={busy}>
+              Delete {toDelete.length}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 

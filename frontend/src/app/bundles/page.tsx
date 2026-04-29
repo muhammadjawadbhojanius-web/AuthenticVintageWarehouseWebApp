@@ -222,6 +222,7 @@ export default function BundlesPage() {
   const [prefixFilter, setPrefixFilter] = useState<PrefixFilter>("all");
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
   const [warningFilter, setWarningFilter] = useState<WarningFilter>("all");
+  const [filtersRestored, setFiltersRestored] = useState(false);
   // Popover open/close + anchor rect for portal positioning.
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterRect, setFilterRect] = useState<DOMRect | null>(null);
@@ -238,6 +239,35 @@ export default function BundlesPage() {
     }, 500);
     return () => clearTimeout(timer);
   }, [search]);
+
+  // Restore filter + search state from sessionStorage on mount so navigating
+  // into a bundle and back doesn't reset what the user had active.
+  useEffect(() => {
+    try {
+      const q = sessionStorage.getItem("bundles_q") ?? "";
+      const s = sessionStorage.getItem("bundles_status") ?? "all";
+      const p = sessionStorage.getItem("bundles_prefix") ?? "all";
+      const m = sessionStorage.getItem("bundles_media") ?? "all";
+      const w = sessionStorage.getItem("bundles_warn") ?? "all";
+      if (q) { setSearch(q); setDebouncedSearch(q); }
+      if (s !== "all") setStatusFilter(s === "0" ? 0 : s === "1" ? 1 : s === "2" ? 2 : "all" as StatusFilter);
+      if (p !== "all") setPrefixFilter(p as PrefixFilter);
+      if (m !== "all") setMediaFilter(m as MediaFilter);
+      if (w !== "all") setWarningFilter(w as WarningFilter);
+    } finally {
+      setFiltersRestored(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!filtersRestored) return;
+    sessionStorage.setItem("bundles_q", search);
+    sessionStorage.setItem("bundles_status", String(statusFilter));
+    sessionStorage.setItem("bundles_prefix", prefixFilter);
+    sessionStorage.setItem("bundles_media", mediaFilter);
+    sessionStorage.setItem("bundles_warn", warningFilter);
+  }, [filtersRestored, search, statusFilter, prefixFilter, mediaFilter, warningFilter]);
 
   const isAdmin = role === "Admin";
   const isListingExec = role === "Listing Executives";
@@ -260,7 +290,7 @@ export default function BundlesPage() {
         has_media:
           mediaFilter === "with" ? true : mediaFilter === "without" ? false : undefined,
       }),
-    enabled: ready,
+    enabled: ready && filtersRestored,
   });
 
   const approvedBrandsQuery = useQuery({
@@ -764,7 +794,7 @@ export default function BundlesPage() {
           />
         )}
 
-        {bundlesQuery.isLoading && <BundleListSkeleton count={6} />}
+        {(!filtersRestored || bundlesQuery.isLoading) && <BundleListSkeleton count={6} />}
         {bundlesQuery.isError && (
           <Card className="mx-auto max-w-md p-6 text-center">
             <p className="font-semibold">Could not load bundles.</p>
