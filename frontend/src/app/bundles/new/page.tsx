@@ -127,9 +127,9 @@ export default function NewBundlePage() {
     );
   }
 
-  const handleAddFiles = (files: FileList | null) => {
-    if (!files) return;
-    setMedia((prev) => [...prev, ...Array.from(files)]);
+  const handleAddFiles = (files: File[]) => {
+    if (files.length === 0) return;
+    setMedia((prev) => [...prev, ...files]);
   };
 
   const removeMedia = (idx: number) => {

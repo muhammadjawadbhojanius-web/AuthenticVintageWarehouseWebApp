@@ -316,9 +316,9 @@ export default function BundleDetailPage() {
     }
   };
 
-  const handleAddFiles = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    uploadQueue.enqueue({ bundleCode: code, files: Array.from(files) });
+  const handleAddFiles = (files: File[]) => {
+    if (files.length === 0) return;
+    uploadQueue.enqueue({ bundleCode: code, files });
   };
 
   return (

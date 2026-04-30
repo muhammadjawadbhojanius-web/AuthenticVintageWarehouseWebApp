@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 // platforms.
 
 interface MediaPickerProps {
-  onFiles: (files: FileList | null) => void;
+  onFiles: (files: File[]) => void;
   disabled?: boolean;
   size?: "sm" | "lg";
 }
@@ -42,9 +42,12 @@ export function MediaPicker({ onFiles, disabled, size = "lg" }: MediaPickerProps
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    onFiles(e.target.files);
-    // Allow re-picking the same file later.
+    // Extract File objects into a plain array BEFORE clearing the input.
+    // Chrome on Windows mutates the same FileList object when value is reset,
+    // so any reference captured after the clear returns an empty list.
+    const files = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = "";
+    if (files.length > 0) onFiles(files);
   };
 
   const buttonClass =

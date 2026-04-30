@@ -303,7 +303,8 @@ export default function BundlesPage() {
     if (!saved) return;
     const y = parseInt(saved, 10);
     if (!isNaN(y) && y > 0 && scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = y;
+      const el = scrollContainerRef.current;
+      requestAnimationFrame(() => { el.scrollTop = y; });
     }
   }, [bundlesQuery.isSuccess, filtersRestored]);
 
@@ -547,7 +548,7 @@ export default function BundlesPage() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex h-screen flex-col">
       {/* In selection mode the action bar *replaces* the app header and
           takes its sticky slot — so the Delete / Post / etc. buttons
           remain reachable no matter how far the user has scrolled. */}
@@ -661,7 +662,7 @@ export default function BundlesPage() {
         </div>
       )}
 
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 pb-20">
+      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto p-4 pb-20">
         {/* Search Bar & Refresh */}
         <div className="mx-auto mb-4 max-w-2xl flex gap-2">
           <div className="relative flex-1">
