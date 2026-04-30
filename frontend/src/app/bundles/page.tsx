@@ -271,18 +271,6 @@ export default function BundlesPage() {
     sessionStorage.setItem("bundles_warn", warningFilter);
   }, [filtersRestored, search, statusFilter, prefixFilter, mediaFilter, warningFilter]);
 
-  // Restore scroll position once after the list has rendered on return navigation.
-  useEffect(() => {
-    if (!bundlesQuery.isSuccess || !filtersRestored || scrollRestoredRef.current) return;
-    scrollRestoredRef.current = true;
-    const saved = sessionStorage.getItem("bundles_scroll");
-    if (!saved) return;
-    const y = parseInt(saved, 10);
-    if (!isNaN(y) && y > 0 && scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = y;
-    }
-  }, [bundlesQuery.isSuccess, filtersRestored]);
-
   const isAdmin = role === "Admin";
   const isListingExec = role === "Listing Executives";
   const isContentCreator = role === "Content Creators";
@@ -306,6 +294,18 @@ export default function BundlesPage() {
       }),
     enabled: ready && filtersRestored,
   });
+
+  // Restore scroll position once after the list has rendered on return navigation.
+  useEffect(() => {
+    if (!bundlesQuery.isSuccess || !filtersRestored || scrollRestoredRef.current) return;
+    scrollRestoredRef.current = true;
+    const saved = sessionStorage.getItem("bundles_scroll");
+    if (!saved) return;
+    const y = parseInt(saved, 10);
+    if (!isNaN(y) && y > 0 && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = y;
+    }
+  }, [bundlesQuery.isSuccess, filtersRestored]);
 
   const approvedBrandsQuery = useQuery({
     queryKey: ["catalog", "brands"],

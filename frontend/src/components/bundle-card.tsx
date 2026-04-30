@@ -28,8 +28,7 @@ import { useInView } from "@/hooks/use-in-view";
 import type { Bundle } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
-// Posting status — kept alongside the card because the trigger, the
-// dropdown, and the bulk bar all need the same icon / label / colour.
+// Posting status
 // ---------------------------------------------------------------------------
 
 /** 0 = draft, 1 = posted, 2 = sold. */
@@ -37,9 +36,7 @@ export type PostingStatus = 0 | 1 | 2;
 
 interface StatusMeta {
   label: string;
-  /** Footer action-button tone (same palette the other actions use). */
   trigger: string;
-  /** Colour applied to the icon inside the dropdown menu row. */
   iconTint: string;
 }
 
@@ -56,21 +53,17 @@ const STATUS_META: Record<PostingStatus, StatusMeta> = {
   },
   2: {
     label: "Sold",
-    // Cash-y amber — distinct from the orange "action" tone used on
-    // Copy/Download so Sold doesn't visually blur into them.
-    trigger:
-      "text-amber-600 hover:bg-amber-500/10 dark:text-amber-400 dark:hover:bg-amber-400/10",
-    iconTint: "text-amber-600 dark:text-amber-400",
+    // Use primary (amber) so it automatically adapts to both modes
+    trigger: "text-primary hover:bg-primary/10",
+    iconTint: "text-primary",
   },
 };
 
 function statusIcon(s: PostingStatus, size: "sm" | "md" = "md"): React.ReactNode {
-  const svgClass = size === "md" ? "h-5 w-5" : "h-4 w-4";
-  const emojiClass = size === "md" ? "text-xl" : "text-lg";
+  const svgClass   = size === "md" ? "h-5 w-5" : "h-4 w-4";
+  const emojiClass = size === "md" ? "text-xl"  : "text-lg";
   switch (s) {
     case 2:
-      // 💵 banknote — the user asked for "cash emoji". Using an emoji
-      // (not a Lucide icon) keeps the UI instantly readable as Sold.
       return (
         <span className={cn("leading-none", emojiClass)} aria-hidden>
           💵
@@ -93,7 +86,6 @@ export interface BundleCardProps {
   selectionMode?: boolean;
   isUploading?: boolean;
   copying?: boolean;
-  /** iOS-only — we're pre-fetching all media before opening the download dialog. */
   preparingDownload?: boolean;
   onClick?: () => void;
   onLongPress?: () => void;
@@ -101,26 +93,17 @@ export interface BundleCardProps {
   onDownload?: () => void;
   onDelete?: () => void;
   onCopy?: () => void;
-  /**
-   * User picked a new posting status from the dropdown. Current state
-   * is on `bundle.posted`. The page decides whether to confirm — any
-   * backward move (new rank lower than current) prompts, any forward
-   * move fires instantly.
-   */
   onChangeStatus?: (next: PostingStatus) => void;
   canDownload?: boolean;
   canDelete?: boolean;
-  /** Admin + Listing Executives. Renders the Posted/Draft pill. */
   canManagePosting?: boolean;
-  /** True when any item in this bundle has a brand/article not yet approved in the catalog. */
   hasPendingCatalog?: boolean;
 }
 
 function formatDate(s?: string): string {
   if (!s) return "";
   try {
-    const dt = new Date(s);
-    return dt.toLocaleString(undefined, {
+    return new Date(s).toLocaleString(undefined, {
       day: "2-digit",
       month: "short",
       year: "numeric",
@@ -133,12 +116,6 @@ function formatDate(s?: string): string {
   }
 }
 
-/**
- * Compact icon-driven media badge content. Mobile screens can't fit the
- * old text form ("1 PHOTO + 1 VIDEO") so we render an image icon + count
- * and a video icon + count side-by-side. "NO MEDIA" stays textual since
- * an empty icon row would read as "still loading".
- */
 function MediaBadgeContent({ photos, videos }: { photos: number; videos: number }) {
   if (photos === 0 && videos === 0) {
     return <span>NO MEDIA</span>;
@@ -171,16 +148,7 @@ interface ThumbnailProps {
   onSelectionChange?: (next: boolean) => void;
 }
 
-function Thumbnail({
-  bundle,
-  isUploading,
-  selectionMode,
-  selected,
-  onSelectionChange,
-}: ThumbnailProps) {
-  // Prefer a still image; fall back to the first video (rendered as a
-  // <video> element so iOS shows its poster frame). If nothing exists,
-  // show a placeholder.
+function Thumbnail({ bundle, isUploading, selectionMode, selected, onSelectionChange }: ThumbnailProps) {
   const { imageSrc, videoSrc } = useMemo(() => {
     let img: string | null = null;
     let vid: string | null = null;
@@ -196,12 +164,6 @@ function Thumbnail({
     return { imageSrc: img, videoSrc: vid };
   }, [bundle.images]);
 
-  // Defer actual media requests until the card is within ~400 px of the
-  // viewport. For a long bundle list this turns the startup cost from
-  // "one GET per card in the list" into "one GET per card the user
-  // actually sees (plus a small read-ahead)". Once a thumb has loaded it
-  // stays mounted — `once: true` means we don't tear it down on scroll
-  // back up.
   const { ref: thumbRef, inView } = useInView<HTMLDivElement>({
     rootMargin: "400px 0px",
     once: true,
@@ -210,14 +172,9 @@ function Thumbnail({
   return (
     <div
       ref={thumbRef}
-      className="relative h-24 w-24 shrink-0 overflow-hidden rounded-lg bg-muted"
+      className="relative h-24 w-24 shrink-0 overflow-hidden rounded-md bg-muted"
     >
       {inView && imageSrc ? (
-        // Plain <img> — the backend serves same-origin under /api/media
-        // with Range-request support, which Safari/iOS require.
-        // `loading="lazy"` is a belt-and-braces hint for the browser's
-        // own deferred-fetch heuristic on top of our own intersection
-        // guard.
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={imageSrc}
@@ -228,9 +185,6 @@ function Thumbnail({
           className="h-full w-full object-cover"
         />
       ) : inView && videoSrc ? (
-        // Metadata-only preload makes iOS render the first frame as a
-        // static poster. `#t=0.1` skips the common black opening frame.
-        // <video loading="lazy"> is not a thing, hence the manual gate.
         <video
           src={`${videoSrc}#t=0.1`}
           preload="metadata"
@@ -240,34 +194,29 @@ function Thumbnail({
         />
       ) : !imageSrc && !videoSrc ? (
         <div className="flex h-full w-full items-center justify-center">
-          <Package className="h-8 w-8 text-muted-foreground/60" />
+          <Package className="h-7 w-7 text-muted-foreground/25" />
         </div>
-      ) : null /* off-screen thumb — bg-muted placeholder holds space */}
+      ) : null}
 
       {/* Upload-in-progress veil */}
       {isUploading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-background/70 backdrop-blur-sm">
-          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        <div className="absolute inset-0 flex items-center justify-center bg-background/75 backdrop-blur-sm">
+          <Loader2 className="h-5 w-5 animate-spin text-primary" />
         </div>
       )}
 
-      {/* Selection-mode overlay checkbox */}
+      {/* Selection-mode overlay */}
       {selectionMode && (
         <div
           className={cn(
             "absolute inset-0 flex items-start justify-start p-1.5",
-            selected ? "bg-primary/25" : "bg-background/40"
+            selected ? "bg-primary/20" : "bg-background/40",
           )}
         >
           <Checkbox
             checked={selected}
             onCheckedChange={(v) => onSelectionChange?.(v)}
-            // Only force a light background when the checkbox is empty —
-            // otherwise it would override bg-primary and hide the tick.
-            className={cn(
-              "shadow-sm",
-              !selected && "bg-background"
-            )}
+            className={cn("shadow-sm", !selected && "bg-background")}
           />
         </div>
       )}
@@ -294,11 +243,7 @@ function BundleCardImpl({
   canManagePosting = false,
   hasPendingCatalog = false,
 }: BundleCardProps) {
-  // Refs (not state) so we don't trigger re-renders and so the values are
-  // read synchronously by handlers that might fire between state flushes.
-  const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // After a long-press fires, mobile browsers also emit a synthetic click
-  // on touch release. We swallow that next click so it doesn't navigate.
+  const pressTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressClickRef = useRef(false);
 
   const handleTouchStart = () => {
@@ -307,15 +252,12 @@ function BundleCardImpl({
     const t = setTimeout(() => {
       onLongPress();
       suppressClickRef.current = true;
-      // Auto-clear in case no synthetic click arrives — 500 ms is safely
-      // past the window in which the click event would fire.
-      setTimeout(() => {
-        suppressClickRef.current = false;
-      }, 500);
+      setTimeout(() => { suppressClickRef.current = false; }, 500);
       pressTimerRef.current = null;
     }, 600);
     pressTimerRef.current = t;
   };
+
   const cancelLongPress = () => {
     if (pressTimerRef.current) {
       clearTimeout(pressTimerRef.current);
@@ -325,16 +267,10 @@ function BundleCardImpl({
 
   const handleCardClick = () => {
     if (suppressClickRef.current) {
-      // This click is the follow-up to a long-press. Drop it.
       suppressClickRef.current = false;
       return;
     }
     if (selectionMode) {
-      // In selection mode, tapping anywhere on the card toggles this
-      // bundle's selection. We call onSelectionChange directly — the
-      // prop is always current, unlike the parent's onClick closure
-      // which can hold a stale `selectionMode` value right after
-      // long-press transitions.
       onSelectionChange?.(!selected);
       return;
     }
@@ -342,16 +278,10 @@ function BundleCardImpl({
   };
 
   const { photos, videos } = countMedia(bundle.images);
-  const hasMedia = photos + videos > 0;
-  const totalPieces = (bundle.items ?? []).reduce(
-    (s, i) => s + (i.number_of_pieces || 0),
-    0
-  );
-  const totalGift = (bundle.items ?? []).reduce(
-    (s, i) => s + (i.gift_pcs || 0),
-    0
-  );
-  const location = bundle.location?.trim();
+  const hasMedia    = photos + videos > 0;
+  const totalPieces = (bundle.items ?? []).reduce((s, i) => s + (i.number_of_pieces || 0), 0);
+  const totalGift   = (bundle.items ?? []).reduce((s, i) => s + (i.gift_pcs || 0), 0);
+  const location    = bundle.location?.trim();
 
   const showActionRow =
     !selectionMode &&
@@ -369,9 +299,10 @@ function BundleCardImpl({
   return (
     <Card
       className={cn(
-        "flex flex-col overflow-hidden cursor-pointer transition-all",
-        "hover:shadow-md hover:border-foreground/20",
-        selected && "border-primary ring-2 ring-primary/30"
+        "flex flex-col overflow-hidden cursor-pointer",
+        "transition-all duration-200",
+        "hover:border-border/80 hover:shadow-card-hover",
+        selected && "border-primary/50 ring-2 ring-primary/15",
       )}
       onClick={handleCardClick}
       onTouchStart={handleTouchStart}
@@ -381,14 +312,12 @@ function BundleCardImpl({
         if (onLongPress) {
           e.preventDefault();
           suppressClickRef.current = true;
-          setTimeout(() => {
-            suppressClickRef.current = false;
-          }, 500);
+          setTimeout(() => { suppressClickRef.current = false; }, 500);
           onLongPress();
         }
       }}
     >
-      {/* Body — thumbnail + identity + metadata */}
+      {/* ── Card body: thumbnail + identity ──────────────────────────────── */}
       <div className="flex items-stretch gap-3 p-3">
         <Thumbnail
           bundle={bundle}
@@ -399,121 +328,99 @@ function BundleCardImpl({
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* Top row: code + pending indicator + media badge (with optional
-              location pill stacked beneath the badge so the right column
-              always tracks "what / where" without crowding the title). */}
+          {/* Top row: code + badges */}
           <div className="flex items-start gap-2">
-            <h3 className="min-w-0 flex-1 truncate text-base font-bold tracking-tight text-foreground">
+            {/* Bundle code — the primary identifier, rendered in monospace amber */}
+            <h3 className="min-w-0 flex-1 truncate font-mono text-sm font-bold tracking-tight text-primary">
               {bundle.bundle_code}
             </h3>
+
             {hasPendingCatalog && (
-              <span title="This bundle has items with brands or articles pending catalog approval">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <span title="Items with brands or articles pending catalog approval">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
               </span>
             )}
+
+            {/* Right column: media count + location */}
             <div className="flex shrink-0 flex-col items-end gap-1">
               <span
                 className={cn(
-                  "rounded-md px-2 py-0.5 text-[10px] font-bold tracking-wide",
+                  "label-stamp rounded px-1.5 py-0.5",
                   isUploading
-                    ? "bg-warning/15 text-warning"
+                    ? "text-warning"
                     : hasMedia
-                      ? "bg-success/15 text-success"
-                      : "bg-muted text-muted-foreground"
+                      ? "text-success"
+                      : "text-muted-foreground/60",
                 )}
               >
-                {isUploading ? (
-                  <span>UPLOADING</span>
-                ) : (
-                  <MediaBadgeContent photos={photos} videos={videos} />
-                )}
+                {isUploading ? "uploading" : <MediaBadgeContent photos={photos} videos={videos} />}
               </span>
+
               {location && (
                 <span
                   title="Warehouse location"
-                  className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[10px] font-bold tracking-wide text-primary"
+                  className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-primary"
                 >
-                  <MapPin className="h-3 w-3" aria-hidden />
+                  <MapPin className="h-2.5 w-2.5" aria-hidden />
                   <span className="font-mono">{location}</span>
                 </span>
               )}
             </div>
           </div>
 
-          {/* Italic quoted name */}
+          {/* Bundle name — italic, subdued */}
           {bundle.bundle_name && (
-            <p className="mt-0.5 truncate text-sm italic text-muted-foreground">
+            <p className="mt-0.5 truncate text-xs italic text-muted-foreground">
               &lsquo;{bundle.bundle_name}&rsquo;
             </p>
           )}
 
-          {/* Bottom metadata row: pieces + gift count (left) + date (right). */}
-          <div className="mt-auto flex items-end justify-between gap-2 pt-2 text-xs text-muted-foreground">
+          {/* Bottom row: piece counts + date */}
+          <div className="mt-auto flex items-end justify-between gap-2 pt-2 text-[11px] text-muted-foreground">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               {totalPieces > 0 && (
                 <span className="inline-flex items-center gap-1 font-medium">
-                  <Layers className="h-3.5 w-3.5" />
-                  <span className="tabular-nums">{totalPieces}</span>
-                  <span>Pcs</span>
+                  <Layers className="h-3 w-3" />
+                  <span className="tabular-nums font-mono">{totalPieces}</span>
+                  <span>pcs</span>
                 </span>
               )}
               {totalGift > 0 && (
-                <span
-                  className="inline-flex items-center gap-1 font-medium"
-                  title="Gift pieces"
-                >
-                  <Gift className="h-3.5 w-3.5" />
-                  <span className="tabular-nums">{totalGift}</span>
-                  <span>Pcs</span>
+                <span className="inline-flex items-center gap-1 font-medium" title="Gift pieces">
+                  <Gift className="h-3 w-3" />
+                  <span className="tabular-nums font-mono">{totalGift}</span>
+                  <span>pcs</span>
                 </span>
               )}
             </div>
-            <span className="tabular-nums">{formatDate(bundle.created_at)}</span>
+            <span className="tabular-nums font-mono text-[10px]">{formatDate(bundle.created_at)}</span>
           </div>
         </div>
       </div>
 
-      {/* Action footer — symmetric equal-width columns */}
+      {/* ── Action footer ─────────────────────────────────────────────────── */}
       {showActionRow && actionCount > 0 && (
         <div
-          className="grid divide-x border-t"
+          className="grid divide-x divide-border/40 border-t border-border/40"
           style={{ gridTemplateColumns: `repeat(${actionCount}, minmax(0, 1fr))` }}
         >
           {onCopy && (
             <ActionButton
               label="Copy"
-              icon={
-                copying ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <ClipboardCopy className="h-5 w-5" />
-                )
-              }
+              icon={copying ? <Loader2 className="h-4 w-4 animate-spin" /> : <ClipboardCopy className="h-4 w-4" />}
               tone="action"
               disabled={copying}
-              onClick={(e) => {
-                e.stopPropagation();
-                onCopy();
-              }}
+              onClick={(e) => { e.stopPropagation(); onCopy(); }}
               ariaLabel="Copy bundle details"
             />
           )}
           {canDownload && (
             <ActionButton
               label={preparingDownload ? "Preparing" : "Download"}
-              icon={
-                preparingDownload ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Download className="h-5 w-5" />
-                )
-              }
+              icon={preparingDownload ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
               tone="action"
               disabled={preparingDownload}
-              onClick={(e) => {
-                e.stopPropagation();
-                onDownload?.();
-              }}
+              onClick={(e) => { e.stopPropagation(); onDownload?.(); }}
               ariaLabel="Download bundle"
             />
           )}
@@ -526,12 +433,9 @@ function BundleCardImpl({
           {canDelete && (
             <ActionButton
               label="Delete"
-              icon={<Trash2 className="h-5 w-5" />}
+              icon={<Trash2 className="h-4 w-4" />}
               tone="destructive"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete?.();
-              }}
+              onClick={(e) => { e.stopPropagation(); onDelete?.(); }}
               ariaLabel="Delete bundle"
             />
           )}
@@ -540,6 +444,10 @@ function BundleCardImpl({
     </Card>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Action button
+// ---------------------------------------------------------------------------
 
 type ActionTone = "action" | "destructive" | "success" | "muted";
 
@@ -555,28 +463,17 @@ interface ActionButtonProps {
 function toneClasses(tone: ActionTone): string {
   switch (tone) {
     case "action":
-      return "text-orange-700 hover:bg-orange-500/5 dark:text-orange-400 dark:hover:bg-orange-400/10";
+      return "text-primary hover:bg-primary/10";
     case "destructive":
-      return "text-red-600 hover:bg-red-500/5 dark:text-red-400 dark:hover:bg-red-400/10";
+      return "text-destructive hover:bg-destructive/10";
     case "success":
-      // Posted state — green, matches the muted-green media badge so the
-      // card reads as "this is live" at a glance.
       return "text-success hover:bg-success/10";
     case "muted":
-      // Draft state — subdued, so the footer doesn't shout while the
-      // bundle is still being worked on.
       return "text-muted-foreground hover:bg-muted/50 hover:text-foreground";
   }
 }
 
-function ActionButton({
-  label,
-  icon,
-  tone,
-  disabled,
-  onClick,
-  ariaLabel,
-}: ActionButtonProps) {
+function ActionButton({ label, icon, tone, disabled, onClick, ariaLabel }: ActionButtonProps) {
   return (
     <button
       type="button"
@@ -584,8 +481,10 @@ function ActionButton({
       onClick={onClick}
       aria-label={ariaLabel}
       className={cn(
-        "flex flex-col items-center justify-center gap-1 py-3 text-xs font-semibold transition-colors",
-        "disabled:pointer-events-none disabled:opacity-60",
+        "flex flex-col items-center justify-center gap-1 py-2.5",
+        "text-[10px] font-bold tracking-widest uppercase",
+        "transition-colors duration-150",
+        "disabled:pointer-events-none disabled:opacity-50",
         toneClasses(tone),
       )}
     >
@@ -596,12 +495,7 @@ function ActionButton({
 }
 
 // ---------------------------------------------------------------------------
-// Status button + portal dropdown.
-//
-// Rendered in the footer like the other action buttons, but instead of
-// toggling on click it opens a 3-option menu (Draft / Posted / Sold).
-// The menu uses createPortal so the Card's overflow-hidden doesn't clip
-// it, and falls back to opening upward when there isn't room below.
+// Status button + portal dropdown
 // ---------------------------------------------------------------------------
 
 interface StatusButtonProps {
@@ -617,8 +511,6 @@ function StatusButton({ status, onPick }: StatusButtonProps) {
   const meta = STATUS_META[status];
 
   const handleOpen = (e: React.MouseEvent) => {
-    // Stop so the Card's own onClick doesn't treat this as a navigate /
-    // selection toggle.
     e.stopPropagation();
     if (btnRef.current) setRect(btnRef.current.getBoundingClientRect());
     setOpen((v) => !v);
@@ -626,7 +518,6 @@ function StatusButton({ status, onPick }: StatusButtonProps) {
 
   const handlePick = (next: PostingStatus) => {
     setOpen(false);
-    // No-op if the user re-picks the current state.
     if (next !== status) onPick(next);
   };
 
@@ -640,7 +531,9 @@ function StatusButton({ status, onPick }: StatusButtonProps) {
         aria-expanded={open}
         aria-label={`Change status — current: ${meta.label}`}
         className={cn(
-          "flex flex-col items-center justify-center gap-1 py-3 text-xs font-semibold transition-colors",
+          "flex flex-col items-center justify-center gap-1 py-2.5",
+          "text-[10px] font-bold tracking-widest uppercase",
+          "transition-colors duration-150",
           meta.trigger,
         )}
       >
@@ -674,9 +567,7 @@ function StatusMenu({ open, anchorRect, current, onPick, onClose }: StatusMenuPr
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -687,16 +578,11 @@ function StatusMenu({ open, anchorRect, current, onPick, onClose }: StatusMenuPr
 
   if (!open || !anchorRect || typeof document === "undefined") return null;
 
-  // Rough menu height estimate: 3 rows × 36 px + 8 px padding.
   const menuHeight = 116;
   const spaceBelow = window.innerHeight - anchorRect.bottom;
   const openUp = spaceBelow < menuHeight + 8;
-  const top = openUp
-    ? Math.max(8, anchorRect.top - menuHeight - 4)
-    : anchorRect.bottom + 4;
-  // Right-anchor so the menu doesn't blow past the right edge on phones
-  // where the button sits near the right side of the footer.
-  const right = Math.max(8, window.innerWidth - anchorRect.right);
+  const top    = openUp ? Math.max(8, anchorRect.top - menuHeight - 4) : anchorRect.bottom + 4;
+  const right  = Math.max(8, window.innerWidth - anchorRect.right);
 
   const options: PostingStatus[] = [0, 1, 2];
 
@@ -704,7 +590,7 @@ function StatusMenu({ open, anchorRect, current, onPick, onClose }: StatusMenuPr
     <div
       ref={ref}
       role="menu"
-      className="fixed z-[60] w-44 overflow-hidden rounded-lg border bg-background shadow-lg"
+      className="fixed z-[60] w-44 overflow-hidden rounded-lg border border-border/60 bg-popover shadow-xl shadow-black/20"
       style={{ top, right }}
     >
       {options.map((s) => {
@@ -715,21 +601,13 @@ function StatusMenu({ open, anchorRect, current, onPick, onClose }: StatusMenuPr
             key={s}
             type="button"
             role="menuitem"
-            onClick={(e) => {
-              e.stopPropagation();
-              onPick(s);
-            }}
+            onClick={(e) => { e.stopPropagation(); onPick(s); }}
             className={cn(
               "flex w-full items-center gap-2.5 px-3 py-2.5 text-sm transition-colors hover:bg-accent",
               active && "bg-accent/50",
             )}
           >
-            <span
-              className={cn(
-                "flex h-5 w-5 items-center justify-center",
-                m.iconTint,
-              )}
-            >
+            <span className={cn("flex h-5 w-5 items-center justify-center", m.iconTint)}>
               {statusIcon(s, "md")}
             </span>
             <span className="flex-1 text-left font-medium">{m.label}</span>
@@ -742,8 +620,4 @@ function StatusMenu({ open, anchorRect, current, onPick, onClose }: StatusMenuPr
   );
 }
 
-// memo so the list page doesn't re-render every card on unrelated state
-// changes (selection toggles, copy spinner, etc.). React's default
-// shallow prop compare is enough — all props are stable callbacks or
-// primitives.
 export const BundleCard = memo(BundleCardImpl);
