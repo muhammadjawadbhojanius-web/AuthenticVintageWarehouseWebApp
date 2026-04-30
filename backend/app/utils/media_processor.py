@@ -2,6 +2,7 @@ import json
 import logging
 import shutil
 import subprocess
+from typing import Callable
 from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ def _probe_video(path: str) -> dict | None:
                 "-v", "error",
                 "-print_format", "json",
                 "-show_streams",
+                "-show_format",
                 path,
             ],
             check=True,
@@ -84,12 +86,20 @@ def _probe_video(path: str) -> dict | None:
         except (ValueError, ZeroDivisionError):
             pass
 
+        duration_sec = 0.0
+        try:
+            raw = vstream.get("duration") or data.get("format", {}).get("duration") or "0"
+            duration_sec = float(raw)
+        except (ValueError, TypeError):
+            pass
+
         return {
             "vcodec": (vstream.get("codec_name") or "").lower(),
             "acodec": (astream.get("codec_name") or "").lower() if astream else "",
             "width": int(vstream.get("width") or 0),
             "height": int(vstream.get("height") or 0),
             "fps": fps,
+            "duration_sec": duration_sec,
         }
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError) as e:
         logger.warning("ffprobe failed for %s: %s", path, e)
@@ -110,7 +120,41 @@ def _is_web_ready(probe: dict) -> bool:
     )
 
 
-def _remux_video(input_path: str, output_path: str):
+def _run_ffmpeg_with_progress(
+    command: list,
+    on_progress: Callable[[float], None] | None = None,
+    duration_sec: float = 0,
+):
+    """
+    Run an ffmpeg command. When on_progress is provided and duration_sec > 0,
+    injects -progress pipe:1 so ffmpeg streams out_time_us lines and calls
+    on_progress(0..1) in real time. Falls back to subprocess.run otherwise.
+    """
+    if on_progress and duration_sec > 0:
+        cmd = [command[0], "-progress", "pipe:1"] + command[1:]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if line.startswith("out_time_us="):
+                try:
+                    us = int(line.split("=", 1)[1])
+                    if us >= 0:
+                        on_progress(min(us / (duration_sec * 1_000_000), 1.0))
+                except (ValueError, IndexError):
+                    pass
+        proc.wait()
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+    else:
+        subprocess.run(command, check=True, capture_output=True)
+
+
+def _remux_video(
+    input_path: str,
+    output_path: str,
+    on_progress: Callable[[float], None] | None = None,
+    duration_sec: float = 0,
+):
     """
     Stream-copy the video into a clean MP4 container: no re-encode, just
     strip metadata and audio, and move the moov atom to the front for
@@ -127,10 +171,15 @@ def _remux_video(input_path: str, output_path: str):
         "-y",
         output_path,
     ]
-    subprocess.run(command, check=True, capture_output=True)
+    _run_ffmpeg_with_progress(command, on_progress, duration_sec)
 
 
-def _transcode_video(input_path: str, output_path: str):
+def _transcode_video(
+    input_path: str,
+    output_path: str,
+    on_progress: Callable[[float], None] | None = None,
+    duration_sec: float = 0,
+):
     """
     Full re-encode to H.264 MP4. Used when the input isn't already
     web-ready. Expensive on low-end CPUs; avoid when possible. Targets
@@ -154,10 +203,14 @@ def _transcode_video(input_path: str, output_path: str):
         "-y",
         output_path,
     ]
-    subprocess.run(command, check=True, capture_output=True)
+    _run_ffmpeg_with_progress(command, on_progress, duration_sec)
 
 
-def process_video(input_path: str, output_path: str):
+def process_video(
+    input_path: str,
+    output_path: str,
+    on_progress: Callable[[float], None] | None = None,
+):
     """
     Dispatcher: probes the input and picks the cheapest correct action.
     - Web-ready (H.264 ≤1080p ≤30fps, typical client-compressor output):
@@ -166,13 +219,14 @@ def process_video(input_path: str, output_path: str):
     Probe failures fall back to full transcode to preserve correctness.
     """
     probe = _probe_video(input_path)
+    duration_sec = (probe or {}).get("duration_sec", 0) or 0
     if probe and _is_web_ready(probe):
         logger.info(
             "Remuxing (stream-copy) %s: %s %dx%d @ %.2ffps",
             input_path, probe["vcodec"], probe["width"], probe["height"], probe["fps"],
         )
         try:
-            _remux_video(input_path, output_path)
+            _remux_video(input_path, output_path, on_progress, duration_sec)
             return
         except subprocess.CalledProcessError as e:
             logger.warning("Remux failed, falling back to transcode: %s", e)
@@ -181,4 +235,4 @@ def process_video(input_path: str, output_path: str):
             "Transcoding %s (probe=%s)",
             input_path, "unavailable" if probe is None else probe,
         )
-    _transcode_video(input_path, output_path)
+    _transcode_video(input_path, output_path, on_progress, duration_sec)

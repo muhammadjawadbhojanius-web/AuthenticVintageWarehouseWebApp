@@ -3,21 +3,19 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { LogOut, Settings as SettingsIcon, ShieldCheck, Terminal } from "lucide-react";
+import { LogOut, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
 import { useConnectivity } from "@/hooks/use-connectivity";
 import { cn } from "@/lib/utils";
 
 interface AppHeaderProps {
-  showAdmin?: boolean;
   showLogout?: boolean;
 }
 
-export function AppHeader({ showAdmin = false, showLogout = true }: AppHeaderProps) {
+export function AppHeader({ showLogout = true }: AppHeaderProps) {
   const router = useRouter();
   const { username, role, isDeveloper, roleOverride, logout } = useAuth();
-  const isAdmin = role === "Admin";
   const connected = useConnectivity();
 
   return (
@@ -46,18 +44,6 @@ export function AppHeader({ showAdmin = false, showLogout = true }: AppHeaderPro
           )}
         />
 
-        {showAdmin && isAdmin && (
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Admin"
-            onClick={() => router.push("/admin")}
-            className="text-muted-foreground hover:text-foreground"
-          >
-            <ShieldCheck className="h-[18px] w-[18px]" />
-          </Button>
-        )}
-
         {isDeveloper && (
           <Button
             variant="ghost"
@@ -75,16 +61,6 @@ export function AppHeader({ showAdmin = false, showLogout = true }: AppHeaderPro
             />
           </Button>
         )}
-
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Settings"
-          onClick={() => router.push("/settings")}
-          className="text-muted-foreground hover:text-foreground"
-        >
-          <SettingsIcon className="h-[18px] w-[18px]" />
-        </Button>
 
         {showLogout && username && (
           <UserMenu

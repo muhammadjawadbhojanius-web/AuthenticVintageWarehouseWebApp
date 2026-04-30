@@ -552,7 +552,7 @@ export default function BundlesPage() {
       {/* In selection mode the action bar *replaces* the app header and
           takes its sticky slot — so the Delete / Post / etc. buttons
           remain reachable no matter how far the user has scrolled. */}
-      {!showSelectionBar && <AppHeader showAdmin />}
+      {!showSelectionBar && <AppHeader />}
 
       {showSelectionBar && (
         <div className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-2 border-b bg-background/90 px-4 py-3 backdrop-blur">

@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import uuid
 import shutil
 import logging
@@ -722,7 +723,17 @@ def _process_upload_job(upload_id: str, bundle_code: str):
         # the target unexpectedly exists between our pick and the rename.
         if is_video:
             try:
-                media_processor.process_video(assembled_path, final_path)
+                _last_commit = [time.monotonic()]
+
+                def _on_video_progress(frac: float):
+                    # Maps ffmpeg 0..1 into the 0.2..0.9 band of overall progress.
+                    job.progress = 0.2 + 0.7 * frac
+                    now = time.monotonic()
+                    if now - _last_commit[0] >= 1.0:
+                        db.commit()
+                        _last_commit[0] = now
+
+                media_processor.process_video(assembled_path, final_path, on_progress=_on_video_progress)
                 os.remove(assembled_path)
             except Exception as e:
                 logger.warning("Video processing failed for %s: %s — keeping original", final_path, e)
