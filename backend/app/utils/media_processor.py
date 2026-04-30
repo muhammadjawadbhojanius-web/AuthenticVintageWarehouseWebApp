@@ -132,7 +132,7 @@ def _run_ffmpeg_with_progress(
     """
     if on_progress and duration_sec > 0:
         cmd = [command[0], "-progress", "pipe:1"] + command[1:]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         assert proc.stdout is not None
         for line in proc.stdout:
             if line.startswith("out_time_us="):
