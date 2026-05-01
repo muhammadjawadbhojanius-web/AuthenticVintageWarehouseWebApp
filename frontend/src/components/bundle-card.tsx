@@ -559,22 +559,53 @@ interface StatusMenuProps {
   onClose: () => void;
 }
 
+const STATUS_OPTIONS: PostingStatus[] = [0, 1, 2];
+
 function StatusMenu({ open, anchorRect, current, onPick, onClose }: StatusMenuProps) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const options = STATUS_OPTIONS;
+  const [focusIdx, setFocusIdx] = useState<number>(() =>
+    Math.max(0, options.indexOf(current))
+  );
+
+  // Reset focus to the currently-selected item whenever the menu opens.
+  useEffect(() => {
+    if (open) setFocusIdx(Math.max(0, options.indexOf(current)));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, current]);
+
+  // Focus the highlighted button when focusIdx changes.
+  useEffect(() => {
+    if (!open) return;
+    const items = ref.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
+    items?.[focusIdx]?.focus();
+  }, [focusIdx, open]);
 
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { onClose(); return; }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFocusIdx((i) => (i + 1) % options.length);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFocusIdx((i) => (i - 1 + options.length) % options.length);
+      } else if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onPick(options[focusIdx]);
+      }
+    };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open, onClose]);
+  }, [open, onClose, onPick, focusIdx, options]);
 
   if (!open || !anchorRect || typeof document === "undefined") return null;
 
@@ -584,16 +615,15 @@ function StatusMenu({ open, anchorRect, current, onPick, onClose }: StatusMenuPr
   const top    = openUp ? Math.max(8, anchorRect.top - menuHeight - 4) : anchorRect.bottom + 4;
   const right  = Math.max(8, window.innerWidth - anchorRect.right);
 
-  const options: PostingStatus[] = [0, 1, 2];
-
   return createPortal(
     <div
       ref={ref}
       role="menu"
+      aria-label="Change posting status"
       className="fixed z-[60] w-44 overflow-hidden rounded-lg border border-border/60 bg-popover shadow-xl shadow-black/20"
       style={{ top, right }}
     >
-      {options.map((s) => {
+      {options.map((s, idx) => {
         const m = STATUS_META[s];
         const active = s === current;
         return (
@@ -601,9 +631,11 @@ function StatusMenu({ open, anchorRect, current, onPick, onClose }: StatusMenuPr
             key={s}
             type="button"
             role="menuitem"
+            tabIndex={idx === focusIdx ? 0 : -1}
             onClick={(e) => { e.stopPropagation(); onPick(s); }}
+            onMouseEnter={() => setFocusIdx(idx)}
             className={cn(
-              "flex w-full items-center gap-2.5 px-3 py-2.5 text-sm transition-colors hover:bg-accent",
+              "flex w-full items-center gap-2.5 px-3 py-2.5 text-sm transition-colors hover:bg-accent focus:bg-accent focus:outline-none",
               active && "bg-accent/50",
             )}
           >

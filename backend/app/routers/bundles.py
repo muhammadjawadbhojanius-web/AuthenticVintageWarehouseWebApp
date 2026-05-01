@@ -4,6 +4,7 @@ import time
 import uuid
 import shutil
 import logging
+from pathlib import Path
 
 from fastapi import (
     APIRouter,
@@ -18,6 +19,7 @@ from sqlalchemy.orm import Session
 from .. import schemas, crud, models
 from ..database import get_db, SessionLocal
 from ..utils import media_processor
+from ..constants import LOCATION_RE
 
 logger = logging.getLogger(__name__)
 
@@ -428,9 +430,6 @@ def change_bundle_posted(
 # Format "AV-NN" or "AVG-NN" — distinct from bundle_code ("AV-NNNN" /
 # "AVG-NNNN"). Empty string clears the location. Auth is advisory per
 # CLAUDE.md, so the gating lives in the admin UI.
-_LOCATION_RE = re.compile(r"^(AV|AVG)-\d{1,3}$", re.IGNORECASE)
-
-
 @router.patch("/{bundle_code}/location", response_model=schemas.BundleOut)
 def change_bundle_location(
     bundle_code: str,
@@ -438,7 +437,7 @@ def change_bundle_location(
     db: Session = Depends(get_db),
 ):
     raw = (payload.location or "").strip()
-    if raw and not _LOCATION_RE.match(raw):
+    if raw and not LOCATION_RE.match(raw):
         raise HTTPException(
             status_code=400,
             detail="Location must look like 'AV-01' or 'AVG-12'",
@@ -652,9 +651,9 @@ def _next_available_path(db, bundle_id: int, bundle_code: str, kind: str, ext: s
         if not os.path.exists(candidate):
             return candidate
         n += 1
-    # Pathological case — fall back to a timestamp suffix
-    import time as _t
-    return os.path.join(folder, f"bundle-{bundle_code}_{kind}_{int(_t.time() * 1000)}.{ext}")
+    # Pathological case (>20 parallel uploads claimed every candidate) —
+    # fall back to a millisecond timestamp suffix to guarantee uniqueness.
+    return os.path.join(folder, f"bundle-{bundle_code}_{kind}_{int(time.time() * 1000)}.{ext}")
 
 
 def _process_upload_job(upload_id: str, bundle_code: str):
@@ -781,58 +780,6 @@ def _process_upload_job(upload_id: str, bundle_code: str):
             pass
         db.close()
 
-
-# ---------- LEGACY UPLOAD-IMAGE (kept for backward compat) ----------
-@router.post("/{bundle_code}/upload-image")
-def upload_image(
-    bundle_code: str,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    """
-    Legacy single-shot upload kept for callers that don't use chunked upload.
-    Streams the file to disk, processes synchronously, then inserts the row.
-    """
-    bundle = crud.get_bundle_by_code(db, bundle_code)
-    if not bundle:
-        raise HTTPException(status_code=404, detail="Bundle not found")
-
-    upload_folder = os.path.join(UPLOADS_DIR, bundle_code)
-    os.makedirs(upload_folder, exist_ok=True)
-    os.makedirs(TEMP_ROOT, exist_ok=True)
-
-    filename = file.filename or "upload.bin"
-    ext = os.path.splitext(filename)[1].lower()
-    temp_path = os.path.join(TEMP_ROOT, f"legacy_{uuid.uuid4().hex}_{filename}")
-
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    try:
-        if ext in IMAGE_EXTS:
-            kind, out_ext = "img", ext.lstrip(".") or "jpg"
-            file_location = _next_available_path(db, bundle.id, bundle_code, kind, out_ext, upload_folder)
-            shutil.move(temp_path, file_location)
-            try:
-                media_processor.process_image(file_location)
-            except Exception as e:
-                logger.warning("Image processing failed: %s", e)
-        elif ext in VIDEO_EXTS:
-            file_location = _next_available_path(db, bundle.id, bundle_code, "vid", "mp4", upload_folder)
-            media_processor.process_video(temp_path, file_location)
-            os.remove(temp_path)
-        else:
-            file_location = _next_available_path(db, bundle.id, bundle_code, "file", ext.lstrip(".") or "bin", upload_folder)
-            shutil.move(temp_path, file_location)
-    except Exception as e:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        raise HTTPException(status_code=500, detail=f"Media processing failed: {str(e)}")
-
-    db_image = models.BundleImage(bundle_id=bundle.id, image_path=file_location)
-    db.add(db_image)
-    db.commit()
-    return {"message": "Media uploaded and processed"}
 
 
 # ---------- EDIT BUNDLE ----------
@@ -1019,17 +966,44 @@ def delete_bundle_image(bundle_code: str, image_id: int, db: Session = Depends(g
     image = crud.delete_bundle_image(db, image_id)
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    if os.path.exists(image.image_path):
-        os.remove(image.image_path)
+    if image.image_path:
+        # Validate the stored path is inside the uploads directory before
+        # removing, so a corrupted DB row can't delete arbitrary host files.
+        try:
+            resolved = Path(image.image_path).resolve()
+            uploads_root = Path(UPLOADS_DIR).resolve()
+            if resolved.is_relative_to(uploads_root) and resolved.exists():
+                resolved.unlink()
+        except Exception as e:
+            logger.warning("Could not remove image file %s: %s", image.image_path, e)
     return {"message": "Image deleted"}
 
 
 # ---------- DELETE BUNDLE ----------
 @router.delete("/{bundle_code}")
 def delete_bundle(bundle_code: str, db: Session = Depends(get_db)):
-    bundle = crud.delete_bundle(db, bundle_code)
+    bundle = crud.get_bundle_by_code(db, bundle_code)
     if not bundle:
         raise HTTPException(status_code=404, detail="Bundle not found")
+
+    # Refuse to delete while a chunked upload is still assembling or
+    # processing — the background task holds a reference to the bundle and
+    # would insert a BundleImage row into a deleted bundle afterwards.
+    active = (
+        db.query(models.UploadJob)
+        .filter(
+            models.UploadJob.bundle_id == bundle.id,
+            models.UploadJob.status.in_(("pending", "uploading", "processing")),
+        )
+        .first()
+    )
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete bundle while an upload is in progress. Cancel the upload first.",
+        )
+
+    crud.delete_bundle(db, bundle_code)
     upload_folder = os.path.join(UPLOADS_DIR, bundle_code)
     if os.path.exists(upload_folder):
         shutil.rmtree(upload_folder)

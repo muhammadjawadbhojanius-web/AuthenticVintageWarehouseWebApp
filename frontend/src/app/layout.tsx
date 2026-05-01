@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
 import { Providers } from "@/components/providers";
+import { ServiceWorkerRegistrar } from "@/components/sw-register";
 
 /* All font files are bundled in public/fonts — no network call at build or
    runtime. Paths below are relative to this file (src/app/layout.tsx). */
@@ -28,6 +29,7 @@ const cormorant = localFont({
   ],
   variable: "--font-cormorant",
   display: "swap",
+  preload: false,
 });
 
 const jetbrainsMono = localFont({
@@ -35,17 +37,28 @@ const jetbrainsMono = localFont({
   variable: "--font-mono",
   display: "swap",
   weight: "100 800",
+  preload: false,
 });
 
 export const metadata: Metadata = {
   title: "Authentic Vintage",
   description: "Warehouse bundle management",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    title: "AV Warehouse",
+    statusBarStyle: "black-translucent",
+  },
+  icons: {
+    apple: "/icons/icon.svg",
+  },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
+  themeColor: "#d97706",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -57,6 +70,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body>
         <Providers>{children}</Providers>
+        <ServiceWorkerRegistrar />
       </body>
     </html>
   );

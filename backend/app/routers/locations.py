@@ -1,4 +1,3 @@
-import re
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -6,10 +5,9 @@ from typing import Optional
 
 from .. import models
 from ..database import get_db
+from ..constants import LOCATION_RE
 
 router = APIRouter(prefix="/locations", tags=["Locations"])
-
-_LOCATION_RE = re.compile(r"^(AV|AVG)-\d{1,3}$", re.IGNORECASE)
 
 
 class LocationEntryOut(BaseModel):
@@ -54,7 +52,7 @@ def upsert_location(
 ):
     """Assign or update a rack location for any bundle code (in-DB or not)."""
     loc = payload.location.strip().upper()
-    if not _LOCATION_RE.match(loc):
+    if not LOCATION_RE.match(loc):
         raise HTTPException(
             status_code=400,
             detail="Location must look like 'AV-01' or 'AVG-12'",
@@ -96,7 +94,7 @@ def bulk_upsert_locations(
     for item in payload.entries:
         code = item.bundle_code.strip().upper()
         loc = item.location.strip().upper()
-        if not _LOCATION_RE.match(loc):
+        if not LOCATION_RE.match(loc):
             errors.append({
                 "bundle_code": code,
                 "error": f"Invalid location '{loc}'",

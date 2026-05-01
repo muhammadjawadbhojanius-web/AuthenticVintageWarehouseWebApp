@@ -6,20 +6,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Trash2, Pencil, Plus, ClipboardCopy } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { BundleDetailSkeleton } from "@/components/skeletons";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { MediaThumb } from "@/components/media-thumb";
 import { MediaPreviewOverlay, type PreviewItem } from "@/components/media-preview-overlay";
 import {
@@ -28,6 +20,8 @@ import {
   validateItem,
   type BundleItemFormValues,
 } from "@/components/bundle-item-form";
+import { EditBundleDialog } from "@/components/edit-bundle-dialog";
+import { EditItemDialog } from "@/components/edit-item-dialog";
 import { useAuthGuard } from "@/hooks/use-auth-guard";
 import { useToast } from "@/components/toaster";
 import {
@@ -524,144 +518,31 @@ export default function BundleDetailPage() {
         )}
       </div>
 
-      {/* Edit-bundle dialog */}
-      <Dialog open={editBundleOpen} onOpenChange={(v) => !v && setEditBundleOpen(false)}>
-        <DialogContent onClose={() => setEditBundleOpen(false)}>
-          <DialogHeader>
-            <DialogTitle>Edit Bundle</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-2">
-              <Label htmlFor="edit-code">Bundle Code</Label>
-              <Input
-                id="edit-code"
-                value={editBundleCode}
-                onChange={(e) => setEditBundleCode(e.target.value.toUpperCase())}
-                disabled={editBundleSaving}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="edit-name">Bundle Name</Label>
-              <Input
-                id="edit-name"
-                value={editBundleName}
-                onChange={(e) => setEditBundleName(e.target.value)}
-                placeholder="optional"
-                disabled={editBundleSaving}
-              />
-            </div>
-            {editBundleError && (
-              <Alert variant="destructive">
-                <AlertDescription>{editBundleError}</AlertDescription>
-              </Alert>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditBundleOpen(false)} disabled={editBundleSaving}>
-              Cancel
-            </Button>
-            <Button onClick={handleSaveBundle} disabled={editBundleSaving}>
-              {editBundleSaving ? <Spinner className="h-4 w-4" /> : "Save"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <EditBundleDialog
+        open={editBundleOpen}
+        bundleCode={editBundleCode}
+        bundleName={editBundleName}
+        error={editBundleError}
+        saving={editBundleSaving}
+        onBundleCodeChange={setEditBundleCode}
+        onBundleNameChange={setEditBundleName}
+        onClose={() => setEditBundleOpen(false)}
+        onSave={handleSaveBundle}
+        swapConflict={swapConflict}
+        swapping={swapping}
+        onSwapClose={() => setSwapConflict(null)}
+        onSwapConfirm={handleConfirmSwap}
+      />
 
-      {/* Swap-codes confirmation. Fires when the admin tries to rename
-          a bundle to a code that's already in use — offers to swap the
-          two bundles' codes (folders, file names, and DB rows) in one
-          atomic server operation. */}
-      <Dialog
-        open={!!swapConflict}
-        onOpenChange={(v) => !v && !swapping && setSwapConflict(null)}
-      >
-        <DialogContent
-          onClose={swapping ? undefined : () => setSwapConflict(null)}
-        >
-          <DialogHeader>
-            <DialogTitle>Swap bundle codes?</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              Bundle{" "}
-              <span className="font-mono font-semibold">
-                {swapConflict?.new_code}
-              </span>{" "}
-              already exists
-              {swapConflict?.existing_bundle_name
-                ? ` (“${swapConflict.existing_bundle_name}”)`
-                : null}
-              . Would you like to swap the two bundles&rsquo; codes?
-            </p>
-            <div className="rounded-md border bg-muted/30 p-3 text-xs font-mono">
-              <div>
-                <span className="text-muted-foreground">this bundle:</span>{" "}
-                <span className="font-semibold">{swapConflict?.old_code}</span>{" "}
-                <span className="text-muted-foreground">→</span>{" "}
-                <span className="font-semibold">{swapConflict?.new_code}</span>
-              </div>
-              <div className="mt-1">
-                <span className="text-muted-foreground">other bundle:</span>{" "}
-                <span className="font-semibold">{swapConflict?.new_code}</span>{" "}
-                <span className="text-muted-foreground">→</span>{" "}
-                <span className="font-semibold">{swapConflict?.old_code}</span>
-              </div>
-              <div className="mt-1 text-[10px] text-muted-foreground">
-                ({swapConflict?.existing_item_count ?? 0} item
-                {swapConflict?.existing_item_count === 1 ? "" : "s"},{" "}
-                {swapConflict?.existing_image_count ?? 0} media file
-                {swapConflict?.existing_image_count === 1 ? "" : "s"} live on
-                the other bundle)
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Folders, file names, and database paths move together — nothing
-              is lost.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setSwapConflict(null)}
-              disabled={swapping}
-            >
-              Cancel
-            </Button>
-            <Button onClick={handleConfirmSwap} disabled={swapping}>
-              {swapping ? <Spinner className="h-4 w-4" /> : "Swap codes"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit-item dialog */}
-      <Dialog open={!!editTarget} onOpenChange={(v) => !v && setEditTarget(null)}>
-        <DialogContent onClose={() => setEditTarget(null)}>
-          <DialogHeader>
-            <DialogTitle>Edit item</DialogTitle>
-          </DialogHeader>
-          <div className="max-h-[60vh] overflow-y-auto">
-            <BundleItemForm
-              value={editDraft}
-              onChange={setEditDraft}
-              disabled={editSaving}
-            />
-            {editError && (
-              <Alert variant="destructive" className="mt-3">
-                <AlertDescription>{editError}</AlertDescription>
-              </Alert>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditTarget(null)} disabled={editSaving}>
-              Cancel
-            </Button>
-            <Button onClick={handleSaveEdit} disabled={editSaving}>
-              {editSaving ? <Spinner className="h-4 w-4" /> : "Save"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <EditItemDialog
+        item={editTarget}
+        draft={editDraft}
+        error={editError}
+        saving={editSaving}
+        onDraftChange={setEditDraft}
+        onClose={() => setEditTarget(null)}
+        onSave={handleSaveEdit}
+      />
 
       {/* Item delete confirm */}
       <Dialog open={confirmItem != null} onOpenChange={(v) => !v && setConfirmItem(null)}>

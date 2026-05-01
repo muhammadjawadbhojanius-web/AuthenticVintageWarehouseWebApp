@@ -1,7 +1,41 @@
+from enum import Enum as PyEnum
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
+
+
+# ---------------------------------------------------------------------------
+# Enumerations — used for validation and documentation. Column types are
+# kept as String/Integer to avoid a schema migration on existing databases;
+# these enums serve as the application-level source of truth for valid values.
+# ---------------------------------------------------------------------------
+
+class UserRole(str, PyEnum):
+    ADMIN = "Admin"
+    CONTENT_CREATORS = "Content Creators"
+    LISTING_EXECUTIVES = "Listing Executives"
+
+
+class BundleStatus(str, PyEnum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class PostedStatus(int, PyEnum):
+    DRAFT = 0
+    POSTED = 1
+    SOLD = 2
+
+
+class UploadJobStatus(str, PyEnum):
+    PENDING = "pending"
+    UPLOADING = "uploading"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class User(Base):

@@ -16,19 +16,19 @@ import type { ConversionAudioOptions } from "mediabunny";
 // ---------------------------------------------------------------------------
 //
 // Goal: deliver the highest-quality MP4 we can while staying inside the
-// 100 MB upload cap and the backend's stream-copy remux window
+// 200 MB upload cap and the backend's stream-copy remux window
 // (H.264 ≤1080p ≤30fps). Stream-copy is ~0% CPU on the server; everything
 // outside that window forces a libx264 transcode there.
 //
 // Decision (in order, easiest-to-most-lossy):
 //
-//   1. Source already H.264 ≤1080p ≤30fps and ≤100 MB
+//   1. Source already H.264 ≤1080p ≤30fps and ≤200 MB
 //        →  skip the client encode. Backend remuxes.
 //   2. fps > 30
 //        →  reduce to 30 fps. Visually fine for warehouse content.
 //   3. Long edge > 1920 (4K and up)
 //        →  scale long edge down to 1920, preserving aspect ratio.
-//   4. Estimated output size > 100 MB
+//   4. Estimated output size > 200 MB
 //        →  drop video bitrate, but never below the per-resolution floor.
 //           If the floor still doesn't fit, step the resolution down a
 //           tier (1080p → 720p) and retry at that floor.
@@ -36,8 +36,8 @@ import type { ConversionAudioOptions } from "mediabunny";
 // We never upsize a low-res source, and we never bump a source's bitrate
 // above what it already had.
 
-const SIZE_CAP_BYTES = 100 * 1024 * 1024;     // 100 MB hard upload cap
-const SIZE_TARGET_BYTES = 95 * 1024 * 1024;   // 95 MB to leave headroom
+const SIZE_CAP_BYTES = 200 * 1024 * 1024;     // 200 MB hard upload cap
+const SIZE_TARGET_BYTES = 190 * 1024 * 1024;  // 190 MB to leave headroom
 
 // Resolution tiers. "long edge" = max(width, height) so this works for
 // portrait and landscape sources without conditional logic.
@@ -174,31 +174,29 @@ function planCompression(
   // CFR re-stamping bug that stretches some VFR sources).
   const outFps: number | null = fpsTooHigh ? TARGET_FRAME_RATE : null;
 
-  // Step 3 — pick the bitrate. Three inputs:
-  //   • a per-tier default that reflects "comfortable quality"
-  //   • the source's effective bitrate (we never bitrate-bump)
-  //   • a size-cap calculation when the source is too big
+  // Step 3 — pick the bitrate.
+  // Use the source's effective bitrate as-is; only reduce it when the
+  // estimated output would exceed the size cap. Bitrate reduction is the
+  // last resort — fps and resolution are already handled above.
   const isHighTier = outLong > TIER_720P_LONG;
   let defaultBitrate = isHighTier ? DEFAULT_BITRATE_1080P : DEFAULT_BITRATE_720P;
   let floorBitrate = isHighTier ? FLOOR_BITRATE_1080P : FLOOR_BITRATE_720P;
 
-  // Effective source bitrate: file-size proxy. Slightly overshoots since
-  // it includes audio that we strip, which is fine — it just means we
-  // err on the side of *more* bitrate, never less.
+  // Effective source bitrate: file-size proxy. Includes audio we strip,
+  // so it slightly overshoots — erring toward more bitrate, never less.
   const srcBitrate =
     durationSec > 0 ? (sizeBytes * 8) / durationSec : defaultBitrate;
 
-  // Size-cap target (only applied when sizeTooBig). 95 MB so we don't
-  // drift over after VBR rate control variance.
+  // Size-cap target — the bitrate needed to land at SIZE_TARGET_BYTES.
   const sizeBitrate =
     durationSec > 0 ? (SIZE_TARGET_BYTES * 8) / durationSec : defaultBitrate;
 
-  // Start at min(default, source) — never up-bitrate.
-  let videoBitrate = Math.min(defaultBitrate, srcBitrate);
+  // Keep source bitrate; only reduce when the output would be too big.
+  let videoBitrate = srcBitrate;
 
   if (sizeTooBig) {
     // Bring it down toward the size target, but not below the tier floor.
-    videoBitrate = Math.max(Math.min(videoBitrate, sizeBitrate), floorBitrate);
+    videoBitrate = Math.max(sizeBitrate, floorBitrate);
 
     // Even at the floor, the result still wouldn't fit → drop a tier.
     const floorWillFit = (floorBitrate * durationSec) / 8 <= SIZE_CAP_BYTES;
@@ -209,10 +207,7 @@ function planCompression(
       outShort = Math.round(shortEdge * scale) & ~1;
       defaultBitrate = DEFAULT_BITRATE_720P;
       floorBitrate = FLOOR_BITRATE_720P;
-      videoBitrate = Math.max(
-        Math.min(sizeBitrate, defaultBitrate),
-        floorBitrate,
-      );
+      videoBitrate = Math.max(sizeBitrate, floorBitrate);
     }
   }
 
@@ -464,8 +459,15 @@ async function compressWithMediaRecorder(
     // has nothing to encode on the audio side.
     const tracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
 
-    const fallbackBitrate =
-      outLong > TIER_720P_LONG ? DEFAULT_BITRATE_1080P : DEFAULT_BITRATE_720P;
+    const srcBitrate = video.duration > 0
+      ? (file.size * 8) / video.duration
+      : (outLong > TIER_720P_LONG ? DEFAULT_BITRATE_1080P : DEFAULT_BITRATE_720P);
+    const fallbackBitrate = file.size > SIZE_CAP_BYTES
+      ? Math.max(
+          video.duration > 0 ? (SIZE_TARGET_BYTES * 8) / video.duration : srcBitrate,
+          outLong > TIER_720P_LONG ? FLOOR_BITRATE_1080P : FLOOR_BITRATE_720P,
+        )
+      : srcBitrate;
     const recorder = new MediaRecorder(new MediaStream(tracks), {
       mimeType,
       videoBitsPerSecond: fallbackBitrate,
@@ -511,6 +513,30 @@ async function compressWithMediaRecorder(
     onProgress?.(1);
 
     if (compressed.size >= file.size) return file;
+
+    if (video.duration > 0) {
+      const checkUrl = URL.createObjectURL(compressed);
+      try {
+        const probe = document.createElement("video");
+        probe.preload = "metadata";
+        probe.src = checkUrl;
+        const outDuration = await new Promise<number>((resolve) => {
+          probe.onloadedmetadata = () => resolve(probe.duration);
+          probe.onerror = () => resolve(0);
+        });
+        const drift = outDuration > 0
+          ? Math.abs(outDuration - video.duration) / video.duration
+          : 0;
+        if (drift > DURATION_DRIFT_TOLERANCE) {
+          console.warn(
+            `[video-compressor] MediaRecorder output duration ${outDuration.toFixed(1)}s drifted from source ${video.duration.toFixed(1)}s (${(drift * 100).toFixed(1)}%), using original`,
+          );
+          return file;
+        }
+      } finally {
+        URL.revokeObjectURL(checkUrl);
+      }
+    }
 
     const ext = mimeType.includes("mp4") ? "mp4" : "webm";
     const baseName = file.name.replace(/\.[^.]+$/, "");

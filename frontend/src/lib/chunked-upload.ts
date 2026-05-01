@@ -118,14 +118,28 @@ export async function chunkedUpload(opts: ChunkedUploadOptions): Promise<void> {
   );
 
   // 4) Poll status. Without backend re-encoding this typically completes
-  // on the very first poll.
+  // on the very first poll. Cap at MAX_POLL_ATTEMPTS (~3 minutes) so a
+  // hung server doesn't loop forever from the client's perspective.
+  const MAX_POLL_ATTEMPTS = 120;
+  let pollAttempts = 0;
   while (true) {
     await new Promise((r) => setTimeout(r, statusPollMs));
     throwIfAborted();
-    const res = await client.get<UploadJobStatusResponse>(
-      `/bundles/${encodeURIComponent(bundleCode)}/uploads/${uploadId}/status`,
-      { signal }
-    );
+    pollAttempts++;
+    let res;
+    try {
+      res = await client.get<UploadJobStatusResponse>(
+        `/bundles/${encodeURIComponent(bundleCode)}/uploads/${uploadId}/status`,
+        { signal }
+      );
+    } catch {
+      if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+        throw new Error("Server did not respond after extended polling — upload may have timed out");
+      }
+      // Transient network hiccup — keep trying
+      continue;
+    }
+    pollAttempts = 0; // reset on success so only consecutive failures count
     const { status, progress, error } = res.data;
     onProcessProgress?.(progress);
     if (status === "completed") return;

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full bleed background — OS applies the mask shape -->
+  <rect width="512" height="512" fill="#1c1815"/>
+  <!-- Content kept within the maskable safe zone: ~102–410px on each axis -->
+  <text
+    x="256"
+    y="308"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="210"
+    font-weight="700"
+    fill="#d97706"
+    text-anchor="middle"
+  >AV</text>
+  <text
+    x="256"
+    y="368"
+    font-family="Arial, Helvetica, sans-serif"
+    font-size="28"
+    font-weight="400"
+    fill="#78716c"
+    text-anchor="middle"
+    letter-spacing="8"
+  >VINTAGE</text>
+</svg>

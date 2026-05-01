@@ -1,3 +1,5 @@
+import time
+import threading
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
@@ -6,6 +8,56 @@ from .. import models, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/catalog", tags=["Catalog"])
+
+# ---------------------------------------------------------------------------
+# Simple 30-second in-process TTL cache for the approved brands/articles
+# lists. These are read on every bundle create/edit combobox load; querying
+# SQLite every time is fast but unnecessary when the catalog rarely changes.
+# ---------------------------------------------------------------------------
+_CACHE_TTL = 30.0
+_cache_lock = threading.Lock()
+_brands_cache: tuple[float, list] | None = None   # (expires_at, data)
+_articles_cache: tuple[float, list] | None = None
+
+
+def _get_approved_brands(db: Session) -> list:
+    global _brands_cache
+    with _cache_lock:
+        now = time.monotonic()
+        if _brands_cache and now < _brands_cache[0]:
+            return _brands_cache[1]
+        data = (
+            db.query(models.Brand)
+            .filter(models.Brand.is_approved == 1)
+            .order_by(func.lower(models.Brand.name))
+            .all()
+        )
+        _brands_cache = (now + _CACHE_TTL, data)
+        return data
+
+
+def _get_approved_articles(db: Session) -> list:
+    global _articles_cache
+    with _cache_lock:
+        now = time.monotonic()
+        if _articles_cache and now < _articles_cache[0]:
+            return _articles_cache[1]
+        data = (
+            db.query(models.Article)
+            .filter(models.Article.is_approved == 1)
+            .order_by(func.lower(models.Article.name))
+            .all()
+        )
+        _articles_cache = (now + _CACHE_TTL, data)
+        return data
+
+
+def _invalidate_catalog_cache():
+    """Call after any write to brands or articles."""
+    global _brands_cache, _articles_cache
+    with _cache_lock:
+        _brands_cache = None
+        _articles_cache = None
 
 
 # ---------------------------------------------------------------------------
@@ -33,12 +85,7 @@ def _find_article(db: Session, article_id: int) -> models.Article:
 @router.get("/brands", response_model=list[schemas.CatalogItemOut])
 def list_approved_brands(db: Session = Depends(get_db)):
     """Return only approved brands (used to populate the combobox)."""
-    return (
-        db.query(models.Brand)
-        .filter(models.Brand.is_approved == 1)
-        .order_by(func.lower(models.Brand.name))
-        .all()
-    )
+    return _get_approved_brands(db)
 
 
 @router.get("/brands/all", response_model=list[schemas.CatalogItemOut])
@@ -92,6 +139,7 @@ def bulk_create_brands(payload: schemas.CatalogBulkCreate, db: Session = Depends
             db.flush()
             result.append(brand)
     db.commit()
+    _invalidate_catalog_cache()
     for r in result:
         db.refresh(r)
     return result
@@ -103,6 +151,7 @@ def approve_brand(brand_id: int, db: Session = Depends(get_db)):
     brand.is_approved = 1
     db.commit()
     db.refresh(brand)
+    _invalidate_catalog_cache()
     return brand
 
 
@@ -111,6 +160,7 @@ def delete_brand(brand_id: int, db: Session = Depends(get_db)):
     brand = _find_brand(db, brand_id)
     db.delete(brand)
     db.commit()
+    _invalidate_catalog_cache()
     return {"detail": "Brand deleted"}
 
 
@@ -121,12 +171,7 @@ def delete_brand(brand_id: int, db: Session = Depends(get_db)):
 @router.get("/articles", response_model=list[schemas.CatalogItemOut])
 def list_approved_articles(db: Session = Depends(get_db)):
     """Return only approved articles (used to populate the combobox)."""
-    return (
-        db.query(models.Article)
-        .filter(models.Article.is_approved == 1)
-        .order_by(func.lower(models.Article.name))
-        .all()
-    )
+    return _get_approved_articles(db)
 
 
 @router.get("/articles/all", response_model=list[schemas.CatalogItemOut])
@@ -180,6 +225,7 @@ def bulk_create_articles(payload: schemas.CatalogBulkCreate, db: Session = Depen
             db.flush()
             result.append(article)
     db.commit()
+    _invalidate_catalog_cache()
     for r in result:
         db.refresh(r)
     return result
@@ -191,6 +237,7 @@ def approve_article(article_id: int, db: Session = Depends(get_db)):
     article.is_approved = 1
     db.commit()
     db.refresh(article)
+    _invalidate_catalog_cache()
     return article
 
 
@@ -199,6 +246,7 @@ def delete_article(article_id: int, db: Session = Depends(get_db)):
     article = _find_article(db, article_id)
     db.delete(article)
     db.commit()
+    _invalidate_catalog_cache()
     return {"detail": "Article deleted"}
 
 
@@ -303,6 +351,7 @@ def merge_brand(source_id: int, target_id: int, db: Session = Depends(get_db)):
     )
     db.delete(source)
     db.commit()
+    _invalidate_catalog_cache()
     db.refresh(target)
     return target
 
@@ -324,5 +373,6 @@ def merge_article(source_id: int, target_id: int, db: Session = Depends(get_db))
     )
     db.delete(source)
     db.commit()
+    _invalidate_catalog_cache()
     db.refresh(target)
     return target

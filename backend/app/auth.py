@@ -7,7 +7,8 @@ from . import crud
 from .database import get_db
 from .models import User
 
-SECRET_KEY = "supersecretwarehousekey"
+import os
+SECRET_KEY = os.environ.get("SECRET_KEY", "supersecretwarehousekey")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

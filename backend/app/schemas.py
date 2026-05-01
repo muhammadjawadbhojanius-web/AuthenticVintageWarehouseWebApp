@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import List, Optional
 from datetime import datetime
 
@@ -100,6 +100,16 @@ class BundleItemCreate(BaseModel):
     grade: str
     size_variation: str
     comments: Optional[str] = None
+
+    @field_validator("brand", "article", mode="before")
+    @classmethod
+    def _normalize_comma_list(cls, v: str) -> str:
+        """Normalize comma-separated brand/article values: strip whitespace
+        around each entry and collapse any double-commas."""
+        if not isinstance(v, str):
+            return v
+        parts = [p.strip() for p in v.split(",")]
+        return ", ".join(p for p in parts if p)
 
 
 class BundleItemOut(BaseModel):

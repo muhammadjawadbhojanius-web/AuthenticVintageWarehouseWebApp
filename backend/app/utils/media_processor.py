@@ -2,6 +2,7 @@ import json
 import logging
 import shutil
 import subprocess
+import threading
 from typing import Callable
 from PIL import Image, ImageOps
 
@@ -24,6 +25,10 @@ WEB_READY_VIDEO_CODECS = {"h264"}
 MAX_REMUX_SHORT_EDGE = 1080  # short edge of 1080p in either orientation
 MAX_REMUX_LONG_EDGE = 1920   # long edge of 1080p in either orientation
 MAX_REMUX_FPS = 30.5         # small tolerance for 29.97
+
+# Limit concurrent ffmpeg processes so a wave of simultaneous uploads
+# doesn't fully saturate the CPU and starve nginx / uvicorn workers.
+_FFMPEG_SEMAPHORE = threading.BoundedSemaphore(2)
 
 
 def process_image(input_path: str):
@@ -133,7 +138,9 @@ def _run_ffmpeg_with_progress(
     if on_progress and duration_sec > 0:
         cmd = [command[0], "-progress", "pipe:1"] + command[1:]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            proc.kill()
+            raise RuntimeError("ffmpeg stdout pipe was not opened; cannot read progress")
         for line in proc.stdout:
             if line.startswith("out_time_us="):
                 try:
@@ -217,22 +224,25 @@ def process_video(
       stream-copy remux, ~0% CPU, 1-3 seconds.
     - Anything else (exotic codec, too large, unknown): full re-encode.
     Probe failures fall back to full transcode to preserve correctness.
+
+    Acquires _FFMPEG_SEMAPHORE so at most 2 ffmpeg processes run at once.
     """
-    probe = _probe_video(input_path)
-    duration_sec = (probe or {}).get("duration_sec", 0) or 0
-    if probe and _is_web_ready(probe):
-        logger.info(
-            "Remuxing (stream-copy) %s: %s %dx%d @ %.2ffps",
-            input_path, probe["vcodec"], probe["width"], probe["height"], probe["fps"],
-        )
-        try:
-            _remux_video(input_path, output_path, on_progress, duration_sec)
-            return
-        except subprocess.CalledProcessError as e:
-            logger.warning("Remux failed, falling back to transcode: %s", e)
-    else:
-        logger.info(
-            "Transcoding %s (probe=%s)",
-            input_path, "unavailable" if probe is None else probe,
-        )
-    _transcode_video(input_path, output_path, on_progress, duration_sec)
+    with _FFMPEG_SEMAPHORE:
+        probe = _probe_video(input_path)
+        duration_sec = (probe or {}).get("duration_sec", 0) or 0
+        if probe and _is_web_ready(probe):
+            logger.info(
+                "Remuxing (stream-copy) %s: %s %dx%d @ %.2ffps",
+                input_path, probe["vcodec"], probe["width"], probe["height"], probe["fps"],
+            )
+            try:
+                _remux_video(input_path, output_path, on_progress, duration_sec)
+                return
+            except subprocess.CalledProcessError as e:
+                logger.warning("Remux failed, falling back to transcode: %s", e)
+        else:
+            logger.info(
+                "Transcoding %s (probe=%s)",
+                input_path, "unavailable" if probe is None else probe,
+            )
+        _transcode_video(input_path, output_path, on_progress, duration_sec)

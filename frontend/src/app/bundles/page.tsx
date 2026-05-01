@@ -1,13 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { useState, useEffect, useMemo, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { Plus, X, Inbox, RefreshCw, Video, Download, Search, Trash2, Share, CheckCircle2, ThumbsUp, ThumbsDown, CheckSquare, SlidersHorizontal, ClipboardList } from "lucide-react";
-import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/app-header";
 import { BundleCard } from "@/components/bundle-card";
+import { FilterPanel } from "@/components/bundle-filter-panel";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BundleListSkeleton } from "@/components/skeletons";
@@ -27,134 +27,18 @@ import { prefetchBundleMedia, type PrefetchedMedia } from "@/lib/bundle-prefetch
 import { cn } from "@/lib/utils";
 import type { Bundle, BundleImage } from "@/lib/types";
 
-// ---------------------------------------------------------------------------
-// Filter popover.
-//
-// Trigger is a compact button with an active-filter-count badge. Click
-// opens a portal-positioned panel (same positioning strategy as the
-// Status dropdown on bundle cards) with segmented button groups for
-// each filter. Matches the Settings page's appearance/theme toggle so
-// it feels native to the app.
-// ---------------------------------------------------------------------------
+const BULK_BATCH_SIZE = 10;
 
-interface FilterOption {
-  value: string | number;
-  label: string;
-}
+type StatusFilter = "all" | 0 | 1 | 2;
+type PrefixFilter = "all" | "AV" | "AVG";
+type MediaFilter = "all" | "with" | "without";
+type WarningFilter = "all" | "warnings";
 
-interface FilterGroup {
-  label: string;
-  options: FilterOption[];
-  value: string | number;
-  onChange: (v: string | number) => void;
-}
-
-function FilterSegmentedGroup({ label, options, value, onChange }: FilterGroup) {
-  return (
-    <div className="space-y-1.5">
-      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {label}
-      </p>
-      <div
-        className="grid gap-1.5"
-        style={{
-          gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`,
-        }}
-      >
-        {options.map((opt) => {
-          const active = opt.value === value;
-          return (
-            <button
-              key={String(opt.value)}
-              type="button"
-              onClick={() => onChange(opt.value)}
-              className={cn(
-                "rounded-md border px-2 py-2 text-xs font-medium transition-colors",
-                active
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-input hover:bg-accent",
-              )}
-            >
-              {opt.label}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-interface FilterPanelProps {
-  anchorRect: DOMRect | null;
-  groups: FilterGroup[];
-  onClear: (() => void) | null;
-  onClose: () => void;
-  excludeRef?: React.RefObject<HTMLElement>;
-}
-
-function FilterPanel({ anchorRect, groups, onClear, onClose, excludeRef }: FilterPanelProps) {
-  const ref = React.useRef<HTMLDivElement | null>(null);
-
-  React.useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (excludeRef?.current?.contains(e.target as Node)) return;
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose, excludeRef]);
-
-  if (!anchorRect || typeof document === "undefined") return null;
-
-  // Panel roughly ~370 px tall (4 groups); flip upward when there isn't room below.
-  const estimatedHeight = 370;
-  const spaceBelow = window.innerHeight - anchorRect.bottom;
-  const openUp = spaceBelow < estimatedHeight + 8;
-  const top = openUp
-    ? Math.max(8, anchorRect.top - estimatedHeight - 4)
-    : anchorRect.bottom + 4;
-  // Right-anchor so the panel doesn't overflow the right edge on phones.
-  const right = Math.max(8, window.innerWidth - anchorRect.right);
-
-  return createPortal(
-    <div
-      ref={ref}
-      role="dialog"
-      aria-label="Filters"
-      className="fixed z-[60] w-[min(20rem,calc(100vw-1rem))] overflow-hidden rounded-lg border bg-background shadow-lg"
-      style={{ top, right }}
-    >
-      <div className="space-y-3 p-3">
-        {groups.map((g) => (
-          <FilterSegmentedGroup key={g.label} {...g} />
-        ))}
-        {onClear && (
-          <div className="flex justify-end pt-1">
-            <button
-              type="button"
-              onClick={onClear}
-              className="text-xs font-medium text-muted-foreground hover:text-foreground"
-            >
-              Clear all
-            </button>
-          </div>
-        )}
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-export default function BundlesPage() {
+function BundlesContent() {
   const { ready } = useAuthGuard();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
   const queryClient = useQueryClient();
   const { role } = useAuth();
   const { toast } = useToast();
@@ -209,20 +93,21 @@ export default function BundlesPage() {
     return s;
   }, [uploadQueue.tasks]);
   const [copyingCode, setCopyingCode] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  // Filter state. Feature-flagged to developers for now; the values
-  // still flow through the query even when the filter bar is hidden
-  // so the behaviour is identical across roles.
-  type StatusFilter = "all" | 0 | 1 | 2;
-  type PrefixFilter = "all" | "AV" | "AVG";
-  type MediaFilter = "all" | "with" | "without";
-  type WarningFilter = "all" | "warnings";
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [prefixFilter, setPrefixFilter] = useState<PrefixFilter>("all");
-  const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
-  const [warningFilter, setWarningFilter] = useState<WarningFilter>("all");
-  const [filtersRestored, setFiltersRestored] = useState(false);
+
+  // Search input — kept as local state so it can be debounced before
+  // triggering a network request. Initialized from the URL param on first render.
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+
+  // Filter state derived from URL search params — filters are bookmarkable
+  // and survive full page refreshes without sessionStorage.
+  const statusParam = searchParams.get("status");
+  const statusFilter: StatusFilter =
+    statusParam === "0" ? 0 : statusParam === "1" ? 1 : statusParam === "2" ? 2 : "all";
+  const prefixFilter = (searchParams.get("prefix") ?? "all") as PrefixFilter;
+  const mediaFilter = (searchParams.get("media") ?? "all") as MediaFilter;
+  const warningFilter = (searchParams.get("warn") ?? "all") as WarningFilter;
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollRestoredRef = useRef(false);
   // Popover open/close + anchor rect for portal positioning.
@@ -235,41 +120,31 @@ export default function BundlesPage() {
     (mediaFilter !== "all" ? 1 : 0) +
     (warningFilter !== "all" ? 1 : 0);
 
+  // Updates a single URL search param without adding a history entry.
+  // Reads window.location.search to avoid stale closure over searchParams
+  // when called inside a debounce timer.
+  const setParam = useCallback(
+    (key: string, value: string | null) => {
+      const params = new URLSearchParams(window.location.search);
+      if (!value || value === "all") {
+        params.delete(key);
+      } else {
+        params.set(key, value);
+      }
+      const qs = params.toString();
+      router.replace(`${pathname}${qs ? `?${qs}` : ""}`, { scroll: false });
+    },
+    [pathname, router],
+  );
+
+  // Debounce search input; sync the settled value to the URL.
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(search);
+      setParam("q", search || null);
     }, 500);
     return () => clearTimeout(timer);
-  }, [search]);
-
-  // Restore filter + search state from sessionStorage on mount so navigating
-  // into a bundle and back doesn't reset what the user had active.
-  useEffect(() => {
-    try {
-      const q = sessionStorage.getItem("bundles_q") ?? "";
-      const s = sessionStorage.getItem("bundles_status") ?? "all";
-      const p = sessionStorage.getItem("bundles_prefix") ?? "all";
-      const m = sessionStorage.getItem("bundles_media") ?? "all";
-      const w = sessionStorage.getItem("bundles_warn") ?? "all";
-      if (q) { setSearch(q); setDebouncedSearch(q); }
-      if (s !== "all") setStatusFilter(s === "0" ? 0 : s === "1" ? 1 : s === "2" ? 2 : "all" as StatusFilter);
-      if (p !== "all") setPrefixFilter(p as PrefixFilter);
-      if (m !== "all") setMediaFilter(m as MediaFilter);
-      if (w !== "all") setWarningFilter(w as WarningFilter);
-    } finally {
-      setFiltersRestored(true);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!filtersRestored) return;
-    sessionStorage.setItem("bundles_q", search);
-    sessionStorage.setItem("bundles_status", String(statusFilter));
-    sessionStorage.setItem("bundles_prefix", prefixFilter);
-    sessionStorage.setItem("bundles_media", mediaFilter);
-    sessionStorage.setItem("bundles_warn", warningFilter);
-  }, [filtersRestored, search, statusFilter, prefixFilter, mediaFilter, warningFilter]);
+  }, [search, setParam]);
 
   const isAdmin = role === "Admin";
   const isListingExec = role === "Listing Executives";
@@ -292,12 +167,12 @@ export default function BundlesPage() {
         has_media:
           mediaFilter === "with" ? true : mediaFilter === "without" ? false : undefined,
       }),
-    enabled: ready && filtersRestored,
+    enabled: ready,
   });
 
   // Restore scroll position once after the list has rendered on return navigation.
   useEffect(() => {
-    if (!bundlesQuery.isSuccess || !filtersRestored || scrollRestoredRef.current) return;
+    if (!bundlesQuery.isSuccess || scrollRestoredRef.current) return;
     scrollRestoredRef.current = true;
     const saved = sessionStorage.getItem("bundles_scroll");
     if (!saved) return;
@@ -306,7 +181,7 @@ export default function BundlesPage() {
       const el = scrollContainerRef.current;
       requestAnimationFrame(() => { el.scrollTop = y; });
     }
-  }, [bundlesQuery.isSuccess, filtersRestored]);
+  }, [bundlesQuery.isSuccess]);
 
   const approvedBrandsQuery = useQuery({
     queryKey: ["catalog", "brands"],
@@ -752,12 +627,12 @@ export default function BundlesPage() {
         {filterOpen && (
           <FilterPanel
             anchorRect={filterRect}
-            excludeRef={filterBtnRef as React.RefObject<HTMLElement>}
+            excludeRef={filterBtnRef as React.RefObject<HTMLElement | null>}
             groups={[
               {
                 label: "Status",
                 value: statusFilter,
-                onChange: (v) => setStatusFilter(v as StatusFilter),
+                onChange: (v) => setParam("status", v === "all" ? null : String(v)),
                 options: [
                   { value: "all", label: "All" },
                   { value: 0, label: "Draft" },
@@ -768,7 +643,7 @@ export default function BundlesPage() {
               {
                 label: "Prefix",
                 value: prefixFilter,
-                onChange: (v) => setPrefixFilter(v as PrefixFilter),
+                onChange: (v) => setParam("prefix", v === "all" ? null : String(v)),
                 options: [
                   { value: "all", label: "All" },
                   { value: "AV", label: "AV-" },
@@ -778,7 +653,7 @@ export default function BundlesPage() {
               {
                 label: "Media",
                 value: mediaFilter,
-                onChange: (v) => setMediaFilter(v as MediaFilter),
+                onChange: (v) => setParam("media", v === "all" ? null : String(v)),
                 options: [
                   { value: "all", label: "All" },
                   { value: "with", label: "With" },
@@ -788,7 +663,7 @@ export default function BundlesPage() {
               {
                 label: "Warnings",
                 value: warningFilter,
-                onChange: (v) => setWarningFilter(v as WarningFilter),
+                onChange: (v) => setParam("warn", v === "all" ? null : String(v)),
                 options: [
                   { value: "all", label: "All" },
                   { value: "warnings", label: "Only ⚠" },
@@ -798,10 +673,13 @@ export default function BundlesPage() {
             onClear={
               activeFilterCount > 0
                 ? () => {
-                    setStatusFilter("all");
-                    setPrefixFilter("all");
-                    setMediaFilter("all");
-                    setWarningFilter("all");
+                    const params = new URLSearchParams(window.location.search);
+                    params.delete("status");
+                    params.delete("prefix");
+                    params.delete("media");
+                    params.delete("warn");
+                    const qs = params.toString();
+                    router.replace(`${pathname}${qs ? `?${qs}` : ""}`, { scroll: false });
                   }
                 : null
             }
@@ -809,7 +687,7 @@ export default function BundlesPage() {
           />
         )}
 
-        {(!filtersRestored || bundlesQuery.isLoading) && <BundleListSkeleton count={6} />}
+        {bundlesQuery.isLoading && <BundleListSkeleton count={6} />}
         {bundlesQuery.isError && (
           <Card className="mx-auto max-w-md p-6 text-center">
             <p className="font-semibold">Could not load bundles.</p>
@@ -1105,13 +983,20 @@ export default function BundlesPage() {
                 setSelectionMode(false);
                 setSelected(new Set());
                 try {
-                  const results = await Promise.allSettled(
-                    codes.map((c) =>
-                      action.kind === "delete"
-                        ? apiDeleteBundle(c)
-                        : updateBundlePosted(c, action.target),
-                    ),
-                  );
+                  // Process in batches to avoid overwhelming the server
+                  // with hundreds of concurrent requests.
+                  const results: PromiseSettledResult<unknown>[] = [];
+                  for (let i = 0; i < codes.length; i += BULK_BATCH_SIZE) {
+                    const batch = codes.slice(i, i + BULK_BATCH_SIZE);
+                    const batchResults = await Promise.allSettled(
+                      batch.map((c) =>
+                        action.kind === "delete"
+                          ? apiDeleteBundle(c)
+                          : updateBundlePosted(c, action.target),
+                      ),
+                    );
+                    results.push(...batchResults);
+                  }
                   const failed = results.filter((r) => r.status === "rejected").length;
                   queryClient.invalidateQueries({ queryKey: ["bundles"] });
                   const verb =
@@ -1205,5 +1090,13 @@ export default function BundlesPage() {
       </Dialog>
 
     </div>
+  );
+}
+
+export default function BundlesPage() {
+  return (
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center"><Spinner /></div>}>
+      <BundlesContent />
+    </Suspense>
   );
 }

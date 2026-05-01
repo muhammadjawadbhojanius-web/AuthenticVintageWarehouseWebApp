@@ -3,9 +3,17 @@ from sqlalchemy.orm import Session
 from fastapi.security import OAuth2PasswordRequestForm
 
 from .. import schemas, crud, auth
-from ..database import get_db  # use the centralized get_db
+from ..database import get_db
+from ..models import User
 
 router = APIRouter(prefix="/users", tags=["Users"])
+
+
+def _require_admin(current_user: User = Depends(auth.get_current_user)) -> User:
+    """Dependency that rejects the request unless the caller is an Admin."""
+    if current_user.role != "Admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return current_user
 
 # ---------- REGISTER ----------
 @router.post("/register", response_model=schemas.UserOut)
@@ -43,15 +51,22 @@ def login(
 
 # ---------- GET ALL USERS (Admin) ----------
 @router.get("/", response_model=list[schemas.UserOut])
-def read_users(db: Session = Depends(get_db)):
+def read_users(
+    db: Session = Depends(get_db),
+    _: User = Depends(_require_admin),
+):
     return crud.get_users(db)
 
 @router.patch("/{user_id}/approve", response_model=schemas.UserOut)
-def approve_user(user_id: int, request: schemas.UserApproveRequest, db: Session = Depends(get_db)):
+def approve_user(
+    user_id: int,
+    request: schemas.UserApproveRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(_require_admin),
+):
     user = crud.get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
     user.is_approved = 1
     user.role = request.role
     db.commit()
@@ -59,22 +74,29 @@ def approve_user(user_id: int, request: schemas.UserApproveRequest, db: Session 
     return user
 
 @router.patch("/{user_id}/role", response_model=schemas.UserOut)
-def update_user_role(user_id: int, request: schemas.UserApproveRequest, db: Session = Depends(get_db)):
+def update_user_role(
+    user_id: int,
+    request: schemas.UserApproveRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(_require_admin),
+):
     user = crud.get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
     user.role = request.role
     db.commit()
     db.refresh(user)
     return user
 
 @router.patch("/{user_id}/reject", response_model=schemas.UserOut)
-def reject_user(user_id: int, db: Session = Depends(get_db)):
+def reject_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(_require_admin),
+):
     user = crud.get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
     user.is_approved = -1
     db.commit()
     db.refresh(user)
@@ -115,11 +137,16 @@ def reset_password(
 
 
 @router.delete("/{user_id}", response_model=dict)
-def delete_user(user_id: int, db: Session = Depends(get_db)):
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(_require_admin),
+):
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
     user = crud.get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
     db.delete(user)
     db.commit()
     return {"detail": "User deleted"}

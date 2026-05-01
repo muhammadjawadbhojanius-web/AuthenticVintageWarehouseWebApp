@@ -1,5 +1,7 @@
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
+from fastapi import HTTPException
 from . import models
 from passlib.context import CryptContext
 
@@ -42,9 +44,6 @@ def get_users(db: Session):
 
 
 # ---------- BUNDLE ----------
-
-from sqlalchemy.exc import IntegrityError
-from fastapi import HTTPException
 
 def create_bundle(db: Session, bundle_code: str, bundle_name: str = None):
     # Pre-populate location from location_entries if a phantom entry already
