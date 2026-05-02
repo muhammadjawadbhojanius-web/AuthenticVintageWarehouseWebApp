@@ -374,9 +374,11 @@ function BundlesContent() {
         busyIdsRef.current.delete(img.id);
         return;
       }
-      // "unsupported" — very old iOS. Fall back to the direct server URL.
+      // "unsupported" — very old iOS or file too large for navigator.share.
+      // Open in a new tab so the user stays in the app (standalone PWA mode
+      // routes _blank links through Safari, which has its own back/Done button).
       const url = `${mediaUrlFor(img.image_path)}?download=true`;
-      nativeDownload(url, entry.fileName);
+      window.open(url, "_blank", "noopener,noreferrer");
       setSavedIds((prev) => new Set(prev).add(img.id));
       toast({
         title: "Saved to Files",
