@@ -44,14 +44,6 @@ export const metadata: Metadata = {
   title: "Authentic Vintage",
   description: "Warehouse bundle management",
   manifest: "/manifest.json",
-  appleWebApp: {
-    capable: true,
-    title: "AV Warehouse",
-    statusBarStyle: "black-translucent",
-  },
-  icons: {
-    apple: "/icons/icon.svg",
-  },
 };
 
 export const viewport: Viewport = {
